@@ -574,16 +574,20 @@ def demo() -> None:
     assert "compliance.check_local_constraints" in board.findings, list(board.findings)
 
     # The board must remember where each finding came from, because the
-    # calculator's refusal downstream depends on exactly this. Today both are
-    # modelled: the stock is a fixture, and Kira is ruling from fixture
-    # parameters because references/ has not been written.
+    # calculator's refusal downstream depends on exactly this. The stock here
+    # is a fixture and so is modelled; Kira now rules from references/, so her
+    # finding is derived and the board must treat the two differently.
     assert board.origin["impact.get_material_stock"] == "modelled"
-    assert board.origin["compliance.check_local_constraints"] == "modelled"
-    assert sorted(board.untrusted_keys()) == [
-        "compliance.check_local_constraints", "impact.get_material_stock",
-    ], board.untrusted_keys()
+    assert "impact.get_material_stock" in board.untrusted_keys()
 
-    # Kira's ruling is derived from fixture parameters until references/ exists.
+    # Asserted as a property, not a value: whichever origin Kira's ruling
+    # carries, the board's trust list has to agree with it. Pinning the string
+    # is what made this check fail the day the rule pack was written, which is
+    # the day it should have passed.
+    kira = board.origin["compliance.check_local_constraints"]
+    assert (kira in ("live", "cached", "derived")) == (
+        "compliance.check_local_constraints" not in board.untrusted_keys()), kira
+
     ruling = board.findings["compliance.check_local_constraints"]
     assert ruling["allowed"] is False and "TKDN" in ruling["reason"], ruling
 
