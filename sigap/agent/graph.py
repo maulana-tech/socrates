@@ -124,11 +124,24 @@ class Cost:
 
 
 def client():
+    """Whatever can serve Claude on this machine.
+
+    Bedrock first when a region is configured, because that is the path the
+    deployment plan is written around. SAP AI Core otherwise, which on the
+    hackathon tenant is a RUNNING Claude deployment that cost nothing extra
+    and was unreachable until there was a client for it.
+    """
     if not CFG.model_ready:
         raise ModelNotReady(
-            "AWS_REGION is not set. The agent team cannot run without model access. "
-            "Check that the region offers Claude in the Bedrock console."
+            "No model access. Set AWS_REGION for Bedrock, or put an AI Core "
+            "service key at sigap/agent/.secrets/ai-core.json. Without one the "
+            "team refuses to reason rather than guessing."
         )
+
+    if not CFG.aws_region:
+        from clients import ai_core
+        return ai_core.client()
+
     # imported here so a dev machine without the SDK can still run the rest
     try:
         from anthropic import AnthropicBedrock

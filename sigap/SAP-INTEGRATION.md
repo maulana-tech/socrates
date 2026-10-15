@@ -52,6 +52,30 @@ is nothing in it to read master data from or write a purchase requisition to.
 That is why the integration points at the sandbox and not at the tenant the
 competition gave us.
 
+### But that tenant is where the model comes from
+
+The same tenant that has no ERP **does** have a RUNNING Claude deployment in AI
+Core's foundation-models scenario, and for a long time nothing here could reach
+it: the only model path was `AnthropicBedrock(aws_region=...)`, so `AWS_REGION`
+was reported as the last blocker to the agents reasoning at all.
+
+`clients/ai_core.py` is that path now. Service key at
+`sigap/agent/.secrets/ai-core.json` (gitignored, mode 700), OAuth2 client
+credentials against the tenant's XSUAA, token cached for its twelve hours, and
+the deployment discovered rather than hardcoded because an id is tenant
+specific and an id in code rots.
+
+Three differences from Bedrock, each found by a 400 from the real endpoint:
+
+| | |
+|---|---|
+| `model` in the body | **400.** The deployment decides the model. Dropped in the client |
+| `strict` on a tool | **400.** It compiles a decoding grammar, and this tool set came to 526MB against a 300MB ceiling. Dropped, and that loses the schema guarantee on this path: `graph._tool_loop` already returns a bad call to the model as a tool_result, so a turn recovers rather than crashing |
+| `enum` beside `["string","null"]` | **400.** Rejected outright. Optional is expressed by staying out of `required`, not by allowing null |
+
+So the measured answer to "is there model access" is **yes**, and
+`manage.py check` prints which of the two paths is in force.
+
 ## The client
 
 `clients/sap_s4.py`, about 150 lines of `urllib`. No SDK, and that is a

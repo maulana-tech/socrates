@@ -96,7 +96,10 @@ and this file claimed 31 for a while after there were more.
 As of 15 October 2026 the shape of it is: `references/` is written, nine documents
 and 57 parameters, and it drives the rulings rather than decorating them. The SAP
 key is set but its **quota is exhausted**, so every read falls back to labelled
-modelled data with the reason attached, see `SAP-INTEGRATION.md`. `AWS_REGION` is
-not set, so the agents do not reason on this machine and every handling stays in
-guided mode. That last one is the only remaining blocker to the system deciding
-anything, and it is deliberate: without a model it refuses rather than guessing.
+modelled data with the reason attached, see `SAP-INTEGRATION.md`.
+
+**The model works.** Not through Bedrock, which still has no `AWS_REGION`, but
+through **SAP AI Core on the hackathon tenant**, which has had a RUNNING Claude
+deployment all along. `check` prints which path is in force. An earlier version of
+this paragraph called `AWS_REGION` the last blocker, which was wrong: the only
+thing missing was a client for the model the competition had already issued.

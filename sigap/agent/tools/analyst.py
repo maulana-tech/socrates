@@ -52,7 +52,13 @@ from engine.charting import DEFAULT_LIMIT, KINDS, ORDERS, Chart, build
                  "description": "only when a finding holds more than one list of "
                                 "rows and the refusal asked which, e.g. "
                                 "'proposed.orders'"},
-        "order": {"type": ["string", "null"], "enum": [*ORDERS, None],
+        # A plain string with an enum, not a nullable one. The real model's
+        # schema validator rejects an enum beside a union type outright:
+        # "Enum value 'highest' does not match declared type ['string','null']".
+        # Optional is expressed by staying out of `required`, not by allowing
+        # null, and the scripted client never validated schemas so this only
+        # appeared on the first call to a real endpoint.
+        "order": {"type": "string", "enum": list(ORDERS),
                   "description": "which end of the data matters, because that end "
                                  "is what survives the row limit. 'highest' for a "
                                  "cost, a penalty or a volume. 'lowest' for days of "

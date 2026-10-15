@@ -16,7 +16,7 @@ from core import identity
 # Files that carry their own self-check in a __main__ block.
 CHECKS = [
     "core/config.py", "core/provenance.py", "core/registry.py", "core/identity.py",
-    "core/store.py", "core/rules.py",
+    "core/store.py", "core/rules.py", "clients/ai_core.py",
     "engine/simulate.py", "engine/audit.py", "engine/matching.py",
     "engine/forecast.py", "engine/arrival.py", "engine/planning.py",
     "engine/allocate.py", "engine/charting.py",
@@ -68,8 +68,14 @@ def check() -> None:
             print(f"    · {who}: {', '.join(names)}")
 
     cfg = config.CFG
+    # Model access, not AWS access. There are two paths and reporting only the
+    # Bedrock one said the team could not reason while a RUNNING Claude
+    # deployment sat in AI Core on the tenant the competition issued.
+    print(f"  model   : {cfg.model_path}"
+          + ("" if cfg.model_ready else "  <- the team refuses to reason without one"))
     absent = [n for n, v in (("SAP_API_KEY", cfg.sap_api_key),
-                             ("AWS_REGION", cfg.aws_region)) if not v]
+                             ("AWS_REGION or an AI Core service key",
+                              "ok" if cfg.model_ready else "")) if not v]
     if absent:
         print(f"\n  keys not set: {', '.join(absent)}"
               "\n    without these the system refuses to decide anything, by design.")

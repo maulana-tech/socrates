@@ -65,8 +65,34 @@ class Config:
         return bool(self.sap_api_key)
 
     @property
+    def ai_core_ready(self) -> bool:
+        """Whether SAP AI Core can serve the model.
+
+        Imported lazily: core must not depend on clients, and asking this
+        question should not cost a network call either, so it only checks
+        that a usable service key is present.
+        """
+        try:
+            from clients import ai_core
+            return ai_core.available()
+        except Exception:                                        # noqa: BLE001
+            return False
+
+    @property
     def model_ready(self) -> bool:
-        return bool(self.aws_region)
+        """Either path will do. There are two, and only one was ever wired.
+
+        The hackathon tenant has had a RUNNING Claude deployment in AI Core
+        the whole time, so AWS_REGION was reported as the last blocker to the
+        team reasoning while a second, paid-for path sat unused.
+        """
+        return bool(self.aws_region) or self.ai_core_ready
+
+    @property
+    def model_path(self) -> str:
+        if self.aws_region:
+            return "bedrock"
+        return "ai-core" if self.ai_core_ready else "none"
 
     @property
     def may_use_modelled(self) -> bool:
@@ -87,7 +113,9 @@ def load() -> Config:
     )
     if c.production:
         missing = [n for n, v in (("SAP_API_KEY", c.sap_api_key),
-                                  ("AWS_REGION", c.aws_region)) if not v]
+                                  ("AWS_REGION or an AI Core service key",
+                                   c.aws_region or ("yes" if c.ai_core_ready else ""))
+                                  ) if not v]
         if missing:
             raise InvalidConfig(
                 "SIGAP_ENV=prod but incomplete: " + ", ".join(missing) +

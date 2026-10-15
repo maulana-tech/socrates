@@ -37,7 +37,7 @@ bureaucracy.
               +--------------+--------------+
               v                             v
           engine/                        clients/
-   deterministic arithmetic          sap_s4, bedrock
+   deterministic arithmetic     sap_s4, ai_core, bedrock
               |                             |
               +--------------+--------------+
                              v
@@ -253,6 +253,21 @@ Three rules learned the hard way:
 | read a new SAP entity | `fetcher.ENTITIES`, and a join in `JOINS` if it spans entities |
 | add a cadence | `signals/watch.py`, one entry in `cadences()` |
 | add a screen | a view in `tools/views.py`, then a page under `app/(app)/` |
+
+## Two model paths
+
+`graph.client()` returns Bedrock when `AWS_REGION` is set and SAP AI Core
+otherwise. Only one was wired for most of this build, which made `AWS_REGION`
+look like the last blocker while a RUNNING Claude deployment sat in AI Core on
+the hackathon tenant. `clients/ai_core.py` translates the differences, all three
+of which were found by a 400 from the live endpoint rather than from a document:
+`model` in the body, `strict` on a tool, and an `enum` beside a nullable type.
+`SAP-INTEGRATION.md` has the detail and what dropping `strict` costs.
+
+The loop above does not know which path it is on, which is the point: the
+client is shaped like the SDK's, blocks are dicts with attribute access so they
+read with getattr and serialise back into the history, and the usage fields line
+up with what `Cost` counts.
 
 ## Dependencies, and the five findings that stay
 

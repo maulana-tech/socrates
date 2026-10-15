@@ -68,6 +68,26 @@ region named `us-west-2    see below`.
 |---|---|---|
 | `SIGAP_SECRET` | `a1b2…` (64 hex) | Signs session tokens. Identity comes only from this signature, so whoever holds it can mint an admin session. Generate per machine, never share, never commit |
 
+### Model access: two paths, either will do
+
+`manage.py check` prints which is in force as `model : bedrock | ai-core | none`.
+
+| Variable / file | What it does |
+|---|---|
+| `AWS_REGION` | Bedrock. A region that offers Claude. Takes precedence when set |
+| `sigap/agent/.secrets/ai-core.json` | **SAP AI Core service key.** Used when `AWS_REGION` is empty. Download it from the BTP cockpit: the AI Core instance, then Service Keys |
+| `AICORE_SERVICE_KEY` | a different path to that file |
+| `AICORE_SERVICE_KEY_JSON` | the whole key inline, for a target where a file cannot be mounted. Prefer the file: a secret in an environment variable shows up in more places |
+| `AICORE_DEPLOYMENT` | skip deployment discovery when the id is known |
+| `AICORE_TIMEOUT` | seconds, default 180 |
+
+The AI Core path needs no AWS account at all. On the hackathon tenant it was
+already there, already running Claude, and unreachable only because nothing had
+been written to call it.
+
+Without either, the team refuses to reason rather than guessing. That is by
+design, and `/agents/{code}/ask` answers 503 with the reason.
+
 ### Rotation, and two keys that needed it
 
 **Both of these were pasted into a chat transcript during development, so both
