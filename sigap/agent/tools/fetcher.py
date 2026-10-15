@@ -8,10 +8,12 @@ from __future__ import annotations
 import json
 import pathlib
 import re
-from datetime import date, datetime, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
 from clients import sap_s4
+from core import rules
 from core.provenance import Origin, Result
 
 _FIXTURE = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "ningbo_scenario.json"
@@ -204,6 +206,21 @@ def _sap_rows(service: str, entity: str, params: Dict) -> List[dict]:
     return sap_s4.rows(sap_s4.get(service, entity, params))
 
 
+def fx_rate() -> Optional[int]:
+    """USD to IDR from references/fx-rate.md, or None when it is not written."""
+    r = rules.whole("usd_idr", 0)
+    return r or None
+
+
+def _to_idr(amount: float, currency: Optional[str]) -> Optional[int]:
+    """Only currencies we hold a written rate for. The rest stay absent."""
+    if currency == "IDR":
+        return int(round(amount))
+    if currency == "USD" and fx_rate():
+        return int(round(amount * fx_rate()))
+    return None
+
+
 def _joined_purchase_orders(top: str = "200") -> List[dict]:
     """Header, item and schedule line as the single row the engines expect."""
     svc = "API_PURCHASEORDER_PROCESS_SRV"
@@ -240,6 +257,10 @@ def _joined_purchase_orders(top: str = "200") -> List[dict]:
             # Live SAP has one date per schedule line, so until a revision
             # exists the promised date and the expected date are the same.
             "RevisedDeliveryDate": delivery,
+            # Ordered-on is what makes a lead time measurable. The header
+            # has always carried it and the joined row dropped it, so every
+            # lead time in the system had to be assumed.
+            "PurchaseOrderDate": sap_date(head.get("PurchaseOrderDate")),
             "Status": head.get("PurchasingProcessingStatus"),
             # No SAP equivalent. The port a shipment loads at is not on the
             # purchase order, so lane concentration stays unanswerable from
@@ -294,6 +315,9 @@ def _joined_sales_orders(top: str = "200") -> List[dict]:
             "Material": mat,
             "Plant": it.get("Plant"),
             "NetAmount": float(it.get("NetAmount") or 0),
+            # Allocation needs units, not only value.
+            "OrderQuantity": float(it.get("RequestedQuantity") or 0),
+            "BaseUnit": it.get("RequestedQuantityUnit"),
             "Currency": it.get("TransactionCurrency") or head.get("TransactionCurrency"),
             "RequestedDeliveryDate": sap_date(head.get("RequestedDeliveryDate")),
             "Customer": head.get("SoldToParty"),
@@ -321,6 +345,14 @@ def _derived_alternate_sources(top: str = "200") -> List[dict]:
              _sap_rows("API_PURCHASEORDER_PROCESS_SRV", "A_PurchaseOrderItem",
                        {"$top": str(int(top) * 3)})}
 
+    # One pass to the first item of each order. This was a linear search
+    # inside a loop over every order line, which on 600 orders was a million
+    # comparisons per read and the read happens more than once.
+    first_item: Dict[str, dict] = {}
+    for (po, _line), it in items.items():
+        first_item.setdefault(po, it)
+
+    as_of = date.fromisoformat(str(profile()["AsOfDate"])[:10])
     by_material: Dict[str, List[dict]] = {}
     for r in rows:
         head = heads.get(r["PurchaseOrder"], {})
@@ -329,7 +361,7 @@ def _derived_alternate_sources(top: str = "200") -> List[dict]:
         if ordered and r["RevisedDeliveryDate"]:
             lead = (date.fromisoformat(r["RevisedDeliveryDate"])
                     - date.fromisoformat(ordered)).days
-        item = next((v for k, v in items.items() if k[0] == r["PurchaseOrder"]), {})
+        item = first_item.get(r["PurchaseOrder"], {})
         by_material.setdefault(r["Material"], []).append({
             "Supplier": r["Supplier"],
             "Quantity": float(r["OrderQuantity"] or 0),
@@ -364,12 +396,75 @@ def _derived_alternate_sources(top: str = "200") -> List[dict]:
                 # the document's own currency. Not converted: an exchange rate
                 # nobody stated is the kind of number this system refuses.
                 "ExtraCost": round((s["UnitPrice"] - floor) * s["Quantity"], 2),
-                "ExtraCostIDR": None,
+                # Converted at the written rate, which carries its own date.
+                # A rupiah figure on an unstated rate is what used to keep
+                # this None, and a stated rate fixes that rather than hiding
+                # it: the rate and its date travel with the number.
+                "ExtraCostIDR": _to_idr((s["UnitPrice"] - floor) * s["Quantity"],
+                                        s["Currency"]),
+                "FxRate": fx_rate() if s["Currency"] == "USD" else None,
+                "FxAsOf": rules.text("fx_as_of") if s["Currency"] == "USD" else None,
+                # Order today, arrive after the lead time this supplier has
+                # actually run on its own purchase orders.
+                "ArrivalDate": (as_of + timedelta(days=int(s["LeadDays"]))).isoformat()
+                               if s["LeadDays"] else None,
                 "TkdnAfterPct": None,
-                "ArrivalDate": None,
+                # Not on the purchase order. Unknown origin is treated as
+                # imported downstream, which is the recoverable error: an
+                # extra five days of cover beats an unplanned stockout.
                 "Origin": None,
+                # A supplier who has already delivered this material is
+                # qualified for it. That evidence is the whole basis of this
+                # list, so there is nothing to approve again.
+                "QualificationDays": 0,
             })
     return out
+
+
+#: How long a joined SAP read is reused. Kira asks for the option list once
+#: per option, so a 108-option handling made 108 joined reads of the same
+#: three entities. Short enough that an operator who uploads a file sees it
+#: take effect within a minute, long enough that one handling reads once.
+SOURCES_CACHE_SECONDS = 60
+_sources_memo: Optional[Tuple[float, Result]] = None
+
+
+def forget_alternate_sources() -> None:
+    """Drop the cache. Called after an upload, and by self-checks."""
+    global _sources_memo
+    _sources_memo = None
+
+
+def _all_alternate_sources() -> Result:
+    global _sources_memo
+    now = time.monotonic()
+    if _sources_memo and now - _sources_memo[0] < SOURCES_CACHE_SECONDS:
+        return _sources_memo[1]
+    got = pull("AlternateSource", "API_PURCHASING_INFO_RECORD_SRV",
+               "A_PurchasingInfoRecord", {"$top": "200"})
+    _sources_memo = (now, got)
+    return got
+
+
+def alternate_sources(material: Optional[str] = None) -> Result:
+    """Every supply option, or one material's.
+
+    One path, because Kira used to read the fixture while Clint read SAP, and
+    that is why a live option id came back to the model as unknown. Filtering
+    happens here rather than in the read, so asking for one material does not
+    cost another round trip.
+    """
+    full = _all_alternate_sources()
+    if material is None:
+        return full
+    return Result([r for r in (full.value or []) if r.get("Material") == material],
+                  full.origin, full.source, full.fetched_at, full.note)
+
+
+def alternate_source(option_id: str) -> Optional[dict]:
+    """One option by id, from wherever the options actually come from."""
+    return next((o for o in (alternate_sources().value or [])
+                 if o.get("id") == option_id), None)
 
 
 #: Reads that need more than one SAP entity to make one row.
@@ -449,6 +544,7 @@ def demo() -> None:
     # The profile is the one entity that used to ignore an upload, which meant
     # every installation was judged against the reference company's TKDN
     # position and measured from its plant coordinates.
+    forget_alternate_sources()
     base = profile_result()
     assert base.origin is Origin.MODELLED, base.origin
     assert "Reference" in base.value["Company"], base.value["Company"]

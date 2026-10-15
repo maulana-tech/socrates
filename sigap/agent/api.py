@@ -44,6 +44,7 @@ import tools  # noqa: F401  (registers every tool)
 from core import identity, registry, store
 from core.config import CFG, bind_target
 from core.identity import NotAuthorised, User
+from tools import fetcher
 from tools.views import VIEWS
 
 HOST, PORT = bind_target(os.environ)
@@ -237,7 +238,8 @@ def upload(_m, b: dict, h) -> Tuple[int, dict]:
     # Profile arrives flat, one facility per row with the company columns
     # repeated, which is the shape an ERP extract comes out in.
     allowed = {"MaterialStock", "PurchaseOrder", "SalesOrder",
-               "BillOfMaterial", "AlternateSource", "Profile"}
+               "BillOfMaterial", "AlternateSource", "Profile",
+               "ConsumptionHistory"}
     if entity not in allowed:
         return 400, {"error": f"entity must be one of {sorted(allowed)}"}
     if not body.strip():
@@ -261,8 +263,12 @@ def upload(_m, b: dict, h) -> Tuple[int, dict]:
     # Nothing in the file itself can tell us, and guessing would mean labelling
     # generated rows as cached, which is exactly the laundering this system
     # exists to prevent.
-    return 201, store.save_upload(entity, filename, rows, u.email,
-                                  synthetic=bool(b.get("synthetic")))
+    saved = store.save_upload(entity, filename, rows, u.email,
+                              synthetic=bool(b.get("synthetic")))
+    # Otherwise the operator uploads a file and the option list keeps serving
+    # the cached read for up to a minute.
+    fetcher.forget_alternate_sources()
+    return 201, saved
 
 
 @route("POST", r"/uploads/([A-Za-z0-9_]+)/delete")

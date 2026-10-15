@@ -12,19 +12,51 @@ from typing import List, Optional, Tuple
 
 from core.provenance import Origin, Result
 from core.registry import register
-from tools.fetcher import fixture
+from tools.fetcher import pull
+
+
+def _stock(material: str, plant: str) -> Result:
+    """Stock and the planned rate, through the one read path."""
+    return pull("MaterialStock", "API_MATERIAL_STOCK_SRV", "A_MatlStkInAcctMod",
+                {"$top": "200"},
+                lambda r: r.get("Material") == material and r.get("Plant") == plant)
 
 HISTORY = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "consumption_history.json"
 _cache: Optional[list] = None
 
 
-def _history(material: str, plant: str) -> List[Tuple[date, float]]:
-    """Daily withdrawals. Its own file: thousands of rows only this reads."""
+def history_rows() -> Tuple[list, str]:
+    """Every withdrawal row, and where it came from.
+
+    A company's own uploaded movement history outranks the built-in file, the
+    same rule every other entity follows. Its own store rather than the
+    scenario fixture because it is thousands of rows that only this reads.
+    """
+    from core import store
+    try:
+        u = store.latest_upload("ConsumptionHistory")
+    except Exception:                                            # noqa: BLE001
+        u = None
+    if u and u["payload"]:
+        return u["payload"], f"upload:{u['filename']}"
+
     global _cache
     if _cache is None:
         _cache = json.loads(HISTORY.read_text()) if HISTORY.exists() else []
-    return [(date.fromisoformat(h["Date"]), float(h["Quantity"])) for h in _cache
-            if h["Material"] == material and h["Plant"] == plant]
+    return _cache, "fixtures/consumption_history.json"
+
+
+def _history(material: str, plant: str) -> List[Tuple[date, float]]:
+    rows, _ = history_rows()
+    out = []
+    for h in rows:
+        if h.get("Material") != material or h.get("Plant") != plant:
+            continue
+        try:
+            out.append((date.fromisoformat(str(h["Date"])[:10]), float(h["Quantity"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(out)
 
 
 @register("get_production_schedule", "demand",
@@ -32,13 +64,15 @@ def _history(material: str, plant: str) -> List[Tuple[date, float]]:
           {"material": {"type": "string"}, "plant": {"type": "string"}},
           ["material", "plant"])
 def get_production_schedule(material: str, plant: str) -> Result:
-    r = next((x for x in fixture("MaterialStock")
-              if x["Material"] == material and x["Plant"] == plant), None)
+    got = _stock(material, plant)
+    r = (got.value or [None])[0]
     if r is None:
-        return Result(None, Origin.MISSING, "API_PRODUCTION_ORDER_2_SRV")
+        return Result(None, Origin.MISSING, got.source,
+                      note=got.note or f"no stock record for {material} at {plant}")
     return Result({"material": material, "plant": plant,
-                   "daily_consumption": r["DailyConsumption"], "unit": r["BaseUnit"]},
-                  Origin.MODELLED, "fixture:MaterialStock")
+                   "daily_consumption": r.get("DailyConsumption"),
+                   "unit": r.get("BaseUnit")},
+                  got.origin, got.source, note=got.note)
 
 
 @register("get_demand_signal", "demand",
@@ -68,10 +102,10 @@ def forecast_demand(material: str, plant: str, horizon_days: int = 30,
         return Result(None, Origin.MISSING, "fixtures/consumption_history.json",
                       note=f"no withdrawal history for {material} at {plant}")
 
-    row = next((r for r in fixture("MaterialStock")
-                if r["Material"] == material and r["Plant"] == plant), None)
-    planned = float(row["DailyConsumption"]) if row else None
-    unit = row.get("BaseUnit", "") if row else ""
+    row = (_stock(material, plant).value or [None])[0]
+    planned = (float(row["DailyConsumption"])
+               if row and row.get("DailyConsumption") is not None else None)
+    unit = (row.get("BaseUnit") or "") if row else ""
 
     f = forecast(series, horizon_days, confidence, planned, material, plant, unit)
     if f.refused:

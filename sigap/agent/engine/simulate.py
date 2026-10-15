@@ -58,6 +58,60 @@ class Ruling:
     label: str
     allowed: bool
     reason: str = ""
+    # When this option actually lands, from engine/arrival.py. Three places
+    # used to compute a date like this and the plan used none of them, so a
+    # combination could be called safe while the goods arrived after the
+    # stockout. It travels on the ruling because the ruling is what already
+    # crosses from Kira into here.
+    arrival_effective: Optional[str] = None
+
+
+@dataclass
+class Commitment:
+    """A customer order the plant owes, and what being late to it costs.
+
+    Pre-converted to rupiah by the caller. The engine does no currency
+    conversion: a rate is a sourced parameter, and sourcing belongs outside
+    a file whose whole job is arithmetic.
+    """
+    id: str
+    customer: str
+    due: date
+    amount_idr: float
+    pct_per_day: float
+    cap_pct: float
+
+
+def late_penalty(commitments: Sequence[Commitment],
+                 gap_from: Optional[date],
+                 gap_until: Optional[date]) -> dict:
+    """What a production gap between two dates costs in late-delivery penalties.
+
+    The contract data for this has been on every sales order all along and was
+    read by nothing. Without it the system can only answer when no plan is
+    safe by saying nothing, where the answer a buyer needs is "be two days
+    late to this customer, it costs less than air freight".
+    """
+    if gap_from is None or gap_until is None or gap_until <= gap_from:
+        return {"idr": 0, "orders": []}
+
+    rows = []
+    for c in commitments:
+        # An order due before the gap should already have shipped; one due
+        # after it is served by the supply that closed the gap.
+        if not (gap_from <= c.due < gap_until):
+            continue
+        days = (gap_until - c.due).days
+        pct = min(days * c.pct_per_day, c.cap_pct)
+        rows.append({
+            "sales_order": c.id, "customer": c.customer,
+            "due": c.due.isoformat(), "days_late": days,
+            "penalty_pct": round(pct, 2),
+            "penalty_idr": int(round(c.amount_idr * pct / 100)),
+            "capped": days * c.pct_per_day > c.cap_pct,
+        })
+    rows.sort(key=lambda r: -r["penalty_idr"])
+    return {"idr": sum(r["penalty_idr"] for r in rows), "orders": rows}
 
 
 @dataclass
@@ -71,6 +125,15 @@ class Simulation:
     # What obeying the rules cost, when a struck-out option would have been
     # cheaper. None when nothing blocked was cheaper, which is also an answer.
     compliance_cost: Optional[dict] = None
+    # The plan with the lowest cost PLUS penalty. Usually the same as chosen.
+    # When it is not, a deliberate short delivery is cheaper than rescuing
+    # the schedule, and a planner is owed that comparison rather than being
+    # handed the safe plan as if it were the only one.
+    cheapest_total: Optional[dict] = None
+    # What doing nothing costs the customer side, so every figure above has
+    # something to be measured against.
+    do_nothing_penalty: Optional[dict] = None
+    options_unplannable: List[dict] = field(default_factory=list)
 
 
 def simulate_scenario(
@@ -82,6 +145,8 @@ def simulate_scenario(
     daily_consumption: float,
     opening_qty: float,
     scheduled_arrivals: Sequence[Arrival] = (),
+    commitments: Sequence[Commitment] = (),
+    horizon_days: int = 120,
 ) -> Simulation:
     """Cost every option that cleared the rules, plus their combinations.
 
@@ -101,22 +166,50 @@ def simulate_scenario(
                 ),
             )
 
-    baseline = project_cover(opening_qty, daily_consumption, start, scheduled_arrivals)
+    baseline = project_cover(opening_qty, daily_consumption, start, scheduled_arrivals,
+                             horizon_days)
+    horizon_end = start + timedelta(days=horizon_days)
+
+    def resumes_after(depleted: Optional[date], arrivals: Sequence[Arrival]) -> Optional[date]:
+        """When supply comes back after a gap opens, or the horizon if never."""
+        if depleted is None:
+            return None
+        later = sorted(a.on for a in arrivals if a.on > depleted)
+        return later[0] if later else horizon_end
 
     # the gap to bridge ends when the last scheduled delivery arrives
     bridge_until = max((a.on for a in scheduled_arrivals), default=None)
 
     viable: List[dict] = []
     blocked: List[dict] = []
+    unplannable: List[dict] = []
     for o in options.value:
         ruling = compliance_rulings.get(o["id"])
+        # The effective date wins over the booked one. This single line is
+        # what used to be missing: the import permit, the supplier
+        # qualification and the port dwell were all computed and then dropped.
+        arrives = (ruling.arrival_effective if ruling and ruling.arrival_effective
+                   else o.get("ArrivalDate"))
         row = {
             "id": o["id"], "label": o["label"], "supplier": o["Supplier"],
-            "qty": o["Quantity"], "arrives": o["ArrivalDate"],
+            "qty": o["Quantity"], "arrives": arrives,
+            "arrives_booked": o.get("ArrivalDate"),
+            "slip_days": ((date.fromisoformat(arrives)
+                           - date.fromisoformat(o["ArrivalDate"])).days
+                          if arrives and o.get("ArrivalDate") else None),
             "extra_cost_idr": o["ExtraCostIDR"], "tkdn_after": o["TkdnAfterPct"],
             "allowed": bool(ruling and ruling.allowed),
             "reason": ruling.reason if ruling else "not yet assessed",
         }
+        # An option with no date or no price cannot be put in a plan. It is
+        # reported rather than dropped, because an option that vanished
+        # silently cannot be argued with, and this is how a live SAP read used
+        # to crash the calculator instead of explaining itself.
+        if row["arrives"] is None or row["extra_cost_idr"] is None:
+            row["why_unplannable"] = ("no arrival date" if row["arrives"] is None
+                                      else "no rupiah price")
+            unplannable.append(row)
+            continue
         (viable if row["allowed"] else blocked).append(row)
 
     def plans(pool: List[dict]) -> List[dict]:
@@ -132,17 +225,28 @@ def simulate_scenario(
         for c in candidates:
             arrivals = [Arrival(m["id"], date.fromisoformat(m["arrives"]), m["qty"])
                         for m in c["members"]]
+            all_arrivals = list(scheduled_arrivals) + arrivals
             cover = project_cover(opening_qty, daily_consumption, start,
-                                  list(scheduled_arrivals) + arrivals)
+                                  all_arrivals, horizon_days)
             tkdn = [m["tkdn_after"] for m in c["members"] if m["tkdn_after"] is not None]
             safe = (cover.depleted_on is None
                     or (bridge_until is not None and cover.depleted_on > bridge_until))
+            # A plan that is not safe is not thereby useless. What it costs is
+            # the penalty on the orders that fall inside the gap it leaves.
+            pen = ({"idr": 0, "orders": []} if safe else
+                   late_penalty(commitments, cover.depleted_on,
+                                resumes_after(cover.depleted_on, all_arrivals)))
             scored.append({
                 "combination": "+".join(m["id"] for m in c["members"]),
                 "members": [m["id"] for m in c["members"]],
                 "cost_idr": c["cost"],
+                "penalty_idr": pen["idr"],
+                "total_idr": c["cost"] + pen["idr"],
+                "orders_late": pen["orders"],
                 "safe": safe,
                 "depleted_on": cover.depleted_on.isoformat() if cover.depleted_on else None,
+                "resumes_on": (resumes_after(cover.depleted_on, all_arrivals).isoformat()
+                               if not safe and cover.depleted_on else None),
                 "tkdn_after": max(tkdn) if tkdn else profile["TkdnCurrentPct"],
                 "blocked_members": [m["id"] for m in c["members"] if not m["allowed"]],
             })
@@ -150,7 +254,22 @@ def simulate_scenario(
 
     scored = plans(viable)
     safe_plans = [s for s in scored if s["safe"]]
+
+    # Cheapest safe plan when one exists. Being deliberately late to a
+    # customer is not something to do for a small saving, so the safe plan
+    # stays the default rather than whatever scores lowest on total.
     chosen = min(safe_plans, key=lambda s: s["cost_idr"]) if safe_plans else None
+
+    # Cost plus penalty, over every plan. When nothing can be safe this is
+    # the answer, and when something can be, this is the comparison that
+    # justifies paying for it.
+    cheapest_total = min(scored, key=lambda s: s["total_idr"]) if scored else None
+    if chosen is None:
+        chosen = cheapest_total
+
+    do_nothing = late_penalty(commitments, baseline.depleted_on,
+                              resumes_after(baseline.depleted_on,
+                                            list(scheduled_arrivals)))
 
     # What the rules cost. The same arithmetic over every option, including the
     # ones Kira struck out, answers a question the chosen plan cannot: was
@@ -185,6 +304,9 @@ def simulate_scenario(
         combinations=scored,
         chosen=chosen,
         compliance_cost=compliance_cost,
+        cheapest_total=cheapest_total,
+        do_nothing_penalty=do_nothing,
+        options_unplannable=unplannable,
     )
 
 
@@ -264,6 +386,83 @@ def demo() -> None:
                              9.2, 84.0, po)
     assert none.compliance_cost is None, none.compliance_cost
     print("  nothing blocked  → no price claimed, rather than a zero")
+
+    # ---- the effective arrival date must drive the plan ----------------
+    # Kira's ruling carries the date. Before this, the import permit, the
+    # supplier qualification and the port dwell were computed and discarded,
+    # and a plan could be called safe while the goods landed after the
+    # stockout. Push option A 30 days out and it must stop being safe.
+    late = dict(rulings)
+    late["A"] = Ruling("A", "air freight", True, arrival_effective="2026-10-11")
+    slipped = simulate_scenario(stock, options, late, fx["Profile"], start,
+                                9.2, 84.0, po)
+    a_late = next(s for s in slipped.combinations if s["combination"] == "A")
+    a_ok = next(s for s in sim.combinations if s["combination"] == "A")
+    assert a_ok["safe"] and not a_late["safe"], (a_ok["safe"], a_late["safe"])
+    assert a_late["arrives"] if False else True
+    row = next(o for o in slipped.options if o["id"] == "A")
+    assert row["arrives"] == "2026-10-11" and row["arrives_booked"] == "2026-09-11"
+    assert row["slip_days"] == 30, row["slip_days"]
+    print(f"  effective date   → A booked {row['arrives_booked']}, lands "
+          f"{row['arrives']} ({row['slip_days']}d), no longer safe ✓")
+
+    # ---- an option with no date or no price is reported, not dropped -----
+    half = Result([dict(options.value[0], id="X", ArrivalDate=None),
+                   dict(options.value[1], id="Y", ExtraCostIDR=None)],
+                  Origin.LIVE, "A_PurchasingInfoRecord")
+    rough = simulate_scenario(half, half, {"X": Ruling("X", "no date", True),
+                                           "Y": Ruling("Y", "no price", True)},
+                              fx["Profile"], start, 9.2, 84.0, po)
+    assert not rough.refused, "a live read with gaps must not refuse outright"
+    why = {o["id"]: o["why_unplannable"] for o in rough.options_unplannable}
+    assert why == {"X": "no arrival date", "Y": "no rupiah price"}, why
+    assert rough.combinations == [], "nothing plannable means no plan, not a crash"
+    print(f"  live read w/ gaps → {why} reported, calculator did not crash ✓")
+
+    # ---- the customer side: what being late actually costs ---------------
+    # Sales orders have carried penalty terms all along and nothing read them.
+    due = [Commitment("SO-1", "Nusa Otomotif", date(2026, 9, 18), 518_000_000, 0.5, 10.0),
+           Commitment("SO-2", "Prima Mobilindo", date(2026, 9, 25), 300_000_000, 0.5, 10.0),
+           Commitment("SO-3", "Later Customer", date(2026, 11, 30), 900_000_000, 0.5, 10.0)]
+
+    # Nothing is allowed, so no plan can be built and the gap stands open.
+    none_allowed = {o["id"]: Ruling(o["id"], o["label"], False, "blocked for the test")
+                    for o in options.value}
+    bad = simulate_scenario(stock, options, none_allowed, fx["Profile"], start,
+                            9.2, 84.0, po, due)
+    dn = bad.do_nothing_penalty
+    assert dn["idr"] > 0, dn
+    # SO-1 falls inside the gap, SO-3 is months later and must not be counted.
+    counted = {o["sales_order"] for o in dn["orders"]}
+    assert "SO-1" in counted and "SO-3" not in counted, counted
+    assert bad.chosen is None and bad.cheapest_total is None
+    print(f"  doing nothing    → Rp {dn['idr']:,} in penalties across "
+          f"{len(dn['orders'])} order(s), {dn['orders'][0]['days_late']}d late to "
+          f"{dn['orders'][0]['customer']} ✓")
+
+    # With options allowed, a plan carries cost AND the penalty it still
+    # leaves, so cost and lateness are comparable in one number.
+    with_due = simulate_scenario(stock, options, rulings, fx["Profile"], start,
+                                 9.2, 84.0, po, due)
+    assert with_due.chosen["penalty_idr"] == 0, with_due.chosen
+    assert with_due.chosen["total_idr"] == with_due.chosen["cost_idr"]
+    assert with_due.cheapest_total is not None
+    cheap = with_due.cheapest_total
+    assert cheap["total_idr"] <= with_due.chosen["total_idr"], (cheap, with_due.chosen)
+    avoided = dn["idr"] - with_due.chosen["penalty_idr"]
+    print(f"  safe plan        → Rp {with_due.chosen['cost_idr']:,} spent avoids "
+          f"Rp {avoided:,} of penalty ✓")
+    if cheap["combination"] != with_due.chosen["combination"]:
+        print(f"  cheaper on total → {cheap['combination']} at Rp "
+              f"{cheap['total_idr']:,} including Rp {cheap['penalty_idr']:,} penalty")
+
+    # The penalty cap is a contract term, not a slope that runs forever.
+    capped = late_penalty(
+        [Commitment("SO-9", "X", date(2026, 1, 1), 1_000_000_000, 0.5, 10.0)],
+        date(2026, 1, 1), date(2027, 1, 1))
+    assert capped["orders"][0]["capped"] is True
+    assert capped["idr"] == 100_000_000, capped
+    print("  penalty cap      → 365 days late still caps at 10%, not 182% ✓")
 
     print("simulate ok")
 

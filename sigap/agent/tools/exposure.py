@@ -15,7 +15,7 @@ from typing import Dict, List
 
 from core.provenance import Origin, Result
 from core.registry import register
-from tools.fetcher import fixture, profile, pull
+from tools.fetcher import alternate_sources, profile, pull
 
 REFERENCES = pathlib.Path(__file__).resolve().parent.parent.parent / "references"
 
@@ -56,9 +56,13 @@ def scan_supply_exposure(horizon_weeks: int = 8, cover_floor_days: int = 14) -> 
                            "header, material sits on A_PurchaseOrderItem which is not "
                            "expanded here")
 
-    bom = fixture("BillOfMaterial")
-    sales = fixture("SalesOrder")
-    alternates = fixture("AlternateSource")
+    # Through the read path, so a live tenant or an uploaded file is what
+    # gets scanned. These three used to come straight out of the fixture
+    # while the stock beside them was live.
+    bom_r = pull("BillOfMaterial", "API_BILL_OF_MATERIAL_SRV", "A_BillOfMaterial", {"$top": "500"})
+    sales_r = pull("SalesOrder", "API_SALES_ORDER_SRV", "A_SalesOrder", {"$top": "500"})
+    alt_r = alternate_sources()
+    bom, sales, alternates = (bom_r.value or []), (sales_r.value or []), (alt_r.value or [])
     horizon_days = horizon_weeks * 7
     start = date.fromisoformat(profile()["AsOfDate"])
 
@@ -234,7 +238,8 @@ def demo() -> None:
     # Materials sharing a finished good must be priced through it once. The
     # bound that catches double counting is the whole order book: no finding
     # can be worth more than every customer order put together.
-    total = sum(s["NetAmount"] for s in fixture("SalesOrder"))
+    total = sum(float(s.get("NetAmount") or 0) for s in
+                (pull("SalesOrder", "API_SALES_ORDER_SRV", "A_SalesOrder", {"$top": "500"}).value or []))
     for f in r.value:
         if f["value_idr"] is not None:
             assert f["value_idr"] <= total, (f["pattern"], f["value_idr"], total)
