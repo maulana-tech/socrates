@@ -254,6 +254,47 @@ Three rules learned the hard way:
 | add a cadence | `signals/watch.py`, one entry in `cadences()` |
 | add a screen | a view in `tools/views.py`, then a page under `app/(app)/` |
 
+## Dependencies, and the five findings that stay
+
+`npm audit` reported 13, one critical. After this round:
+
+| | Before | After |
+|---|---|---|
+| critical | 1 | **0** |
+| high | 12 | 5 |
+| **in the production tree** | 11 | **0** |
+
+What was done, and why the five remain:
+
+- **next 16.3.4 to 16.4.1.** The critical finding was remote code execution in
+  `next/og` ImageResponse. Re-pinned exactly rather than left on a caret,
+  because this version of Next has breaking changes and a caret on a framework
+  like that is how two machines get two builds.
+- **shadcn removed from `dependencies`.** It is a component scaffolding CLI and
+  it sat in the production dependency tree, where it pulled `fast-glob`,
+  `micromatch` and `braces`. `app/globals.css` imported one stylesheet from it,
+  so 629 lines of static CSS kept a whole CLI installed. That file is now
+  vendored at `app/shadcn-tailwind.css` with its provenance and a refresh
+  recipe in its header. `components.json` stays, so `npx shadcn@latest add`
+  still works when a new component is wanted.
+- **sharp, source-map-js, brace-expansion, @modelcontextprotocol/sdk** took
+  ordinary patch bumps.
+
+The five that remain are all one chain:
+
+```
+eslint-config-next@16.4.1 -> @next/eslint-plugin-next -> fast-glob -> micromatch -> braces@3.0.3
+```
+
+`braces` has a published denial-of-service advisory and **no patched release
+exists**: there is no version above 3.0.3. npm's suggested fix is
+`eslint-config-next@14.2.35`, which would mean linting a Next 16 app with a
+Next 14 config. So the finding is accepted on three grounds: it is a
+devDependency that never reaches a deployed artefact, `npm audit --omit=dev`
+reports zero, and the only available "fix" is a two-major-version downgrade of
+the linter. Revisit when `braces` ships a patch or `@next/eslint-plugin-next`
+drops `fast-glob`.
+
 ## The honest ceiling
 
 Two SAP write targets answer 403, because the hackathon BTP tenant carries AI

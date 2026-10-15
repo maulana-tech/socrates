@@ -737,24 +737,6 @@ def demo() -> None:
     print("store ok")
 
 
-if __name__ == "__main__":
-    # This check writes rows, so it must never meet the real database. CFG is
-    # frozen and read at import, so the only honest way to swap it is to start
-    # again with SIGAP_DB pointing somewhere disposable.
-    import os
-    import subprocess
-    import sys
-    import tempfile
-
-    if os.environ.get("SIGAP_STORE_CHECK") != "1":
-        db = pathlib.Path(tempfile.mkdtemp(prefix="sigap-check-")) / "check.db"
-        sys.exit(subprocess.call(
-            [sys.executable, __file__],
-            env={**os.environ, "SIGAP_DB": str(db), "SIGAP_STORE_CHECK": "1",
-                 "PYTHONPATH": os.environ.get("PYTHONPATH", ".")}))
-    demo()
-
-
 def delivery_observations() -> List[dict]:
     """Deliveries this system proposed and then watched land.
 
@@ -812,3 +794,21 @@ def action_counts() -> dict:
             "  FROM actions").fetchone()
     return {k: int(r[k] or 0) for k in
             ("total", "autonomous", "pending", "sent", "with_outcome")}
+
+
+if __name__ == "__main__":
+    # This check writes rows, so it must never meet the real database. CFG is
+    # frozen and read at import, so the only honest way to swap it is to start
+    # again with SIGAP_DB pointing somewhere disposable.
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    if os.environ.get("SIGAP_STORE_CHECK") != "1":
+        db = pathlib.Path(tempfile.mkdtemp(prefix="sigap-check-")) / "check.db"
+        sys.exit(subprocess.call(
+            [sys.executable, __file__],
+            env={**os.environ, "SIGAP_DB": str(db), "SIGAP_STORE_CHECK": "1",
+                 "PYTHONPATH": os.environ.get("PYTHONPATH", ".")}))
+    demo()

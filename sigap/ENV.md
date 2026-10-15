@@ -39,6 +39,15 @@ PYTHONPATH=. python3 manage.py check
 `manage.py secret` prints a whole `export SIGAP_SECRET="…"` line so it can be
 sourced; in `.env` you want only the part inside the quotes.
 
+**What can be uploaded.** `POST /uploads` accepts CSV for `MaterialStock`,
+`PurchaseOrder`, `SalesOrder`, `BillOfMaterial`, `AlternateSource`, `Profile`
+and `ConsumptionHistory`. The last two were added when the planner started
+needing them: `Profile` so an installation is judged against its own TKDN
+position and its own plant coordinates rather than the reference one, and
+`ConsumptionHistory` (material, plant, date, quantity) because safety stock is
+sized from how much daily use actually moves. Without the movement history a
+position is reported as unplannable rather than given a default.
+
 That runs. Figures come from `fixtures/` and are labelled `MODELLED`, which the
 interface shows and the calculator refuses to price. Adding `SAP_API_KEY` and
 `AWS_REGION` is what turns the labels to `LIVE` and lets the agents reason.
@@ -58,6 +67,31 @@ region named `us-west-2    see below`.
 | Variable | Example | What it does |
 |---|---|---|
 | `SIGAP_SECRET` | `a1b2…` (64 hex) | Signs session tokens. Identity comes only from this signature, so whoever holds it can mint an admin session. Generate per machine, never share, never commit |
+
+### Rotation, and two keys that needed it
+
+**Both of these were pasted into a chat transcript during development, so both
+had to be replaced rather than reused.**
+
+| Key | Status | Who does it |
+|---|---|---|
+| `SIGAP_SECRET` | **Rotated 15 October 2026** | done, locally |
+| `SAP_API_KEY` | **still needs replacing** | you, on SAP's portal |
+
+`SIGAP_SECRET` is ours, so it was regenerated with `manage.py secret` and
+written to `.env`. Rotating it invalidates **every existing session token**, so
+everyone signs in again. Nothing else breaks: the secret only signs sessions,
+it does not encrypt stored data.
+
+`SAP_API_KEY` belongs to SAP and cannot be rotated from here. On
+[api.sap.com](https://api.sap.com), open your profile, go to **Settings ->
+API Keys**, delete the existing sandbox key and copy the new one into `.env`.
+The old key keeps working until it is deleted, so delete it rather than only
+generating a replacement.
+
+A key that has been in a chat log, a screenshot, a pasted terminal buffer or a
+group message is a key to replace, whether or not anything bad has happened.
+Rotating costs a minute. Not rotating costs whatever the key can reach.
 
 ### Connects the system to the outside
 

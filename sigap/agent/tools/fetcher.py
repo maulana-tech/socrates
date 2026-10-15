@@ -128,6 +128,18 @@ def _uploaded(entity: str, keep: Optional[Callable[[dict], bool]]) -> Optional[R
     )
 
 
+#: How much of a SAP error to carry on the answer. The whole fault body is
+#: often a page of JSON, and a note is read by a person.
+SAP_NOTE_CHARS = 180
+
+
+def _sap_note(failed: str) -> str:
+    if not failed:
+        return ""
+    short = failed if len(failed) <= SAP_NOTE_CHARS else failed[:SAP_NOTE_CHARS] + "..."
+    return f"SAP could not be read, so this is not live. {short}"
+
+
 def pull(
     fixture_entity: str,
     sap_service: str,
@@ -145,6 +157,7 @@ def pull(
         if own is not None:
             return own
 
+    failed = ""
     if sap_s4.available():
         try:
             join = JOINS.get(fixture_entity)
@@ -156,18 +169,28 @@ def pull(
                 data = [r for r in data if keep(r)]
             return Result(data, Origin.LIVE, sap_service)
         except Exception as e:                                   # noqa: BLE001
-            return Result(None, Origin.MISSING, sap_service, note=f"{type(e).__name__}: {e}")
+            # A failed live read used to stop here as MISSING, while no key at
+            # all fell through to labelled modelled data. The same inability to
+            # read produced a working screen in one case and an empty one in
+            # the other, and a rate-limited sandbox key emptied the whole app.
+            #
+            # Falling through is not inventing a value: the origin can never
+            # become LIVE, the figure stays untrusted, and the calculator still
+            # refuses to price it. What is gained is that the reason travels
+            # with the answer instead of replacing it.
+            failed = f"{type(e).__name__}: {e}"
 
     own = _uploaded(fixture_entity, keep)
     if own is not None:
-        return own
+        return Result(own.value, own.origin, own.source, own.fetched_at,
+                      note="; ".join(filter(None, [own.note, _sap_note(failed)])))
 
     data = fixture(fixture_entity)
     if keep:
         data = [r for r in data if keep(r)]
     return Result(
         data, Origin.MODELLED, f"fixture:{fixture_entity}",
-        note="SAP_API_KEY is not set. Using modelled data",
+        note=_sap_note(failed) or "SAP_API_KEY is not set. Using modelled data",
     )
 
 
@@ -540,6 +563,37 @@ def demo() -> None:
     if is_mock_sap():
         assert gen.origin is Origin.MODELLED and not gen.trusted, gen.origin
         print("  a file declared as generated stays modelled ✓")
+
+    # A live read that fails must degrade to labelled data, not to an empty
+    # screen. A rate-limited sandbox key used to empty the whole application
+    # while no key at all left it working.
+    # Both are stubbed, so this runs with or without a key: the check has to
+    # exercise the failure path on every machine, not only on one that happens
+    # to be configured.
+    import clients.sap_s4 as sap
+    real_get, real_available = sap.get, sap.available
+    sap.available = lambda: True
+    sap.get = lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError('{"fault":{"faultstring":"Rate limit quota violation"}}'))
+    try:
+        broke = pull("Quotation", "API_SUPPLIERQUOTATION_2_SRV", "A_SupplierQuotation",
+                     {"$top": "3"})
+    finally:
+        sap.get, sap.available = real_get, real_available
+
+    assert broke.value, "a failed read left nothing to show"
+    assert broke.origin is Origin.MODELLED, broke.origin
+    assert not broke.trusted, "a fallback must never be trusted"
+    assert "could not be read" in broke.note and "quota" in broke.note, broke.note
+    print(f"  SAP failure degrades to {broke.origin.value}, {len(broke.value)} rows, "
+          f"reason carried, still untrusted ✓")
+
+    # And the safety property this leans on: modelled data still cannot be
+    # priced, so degrading does not let a rupiah figure out.
+    from engine.simulate import simulate_scenario
+    refused = simulate_scenario(broke, broke, {}, profile(),
+                                date.fromisoformat(profile()["AsOfDate"]), 9.2, 84.0)
+    assert refused.refused, "a fallback must not be allowed to produce a figure"
 
     # The profile is the one entity that used to ignore an upload, which meant
     # every installation was judged against the reference company's TKDN

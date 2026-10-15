@@ -333,4 +333,10 @@ def demo() -> None:
 
 
 if __name__ == "__main__":
+    # This check raises actions and records outcomes, so it writes events and
+    # runs. Without this it wrote them into whatever database the operator was
+    # using, and 22 rows of "exec-check" had accumulated in the real one.
+    from core.config import fixtures_only
+
+    fixtures_only(__file__, "SIGAP_EXECUTION_CHECK")
     demo()
