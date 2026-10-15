@@ -19,10 +19,11 @@ CHECKS = [
     "core/store.py", "core/rules.py",
     "engine/simulate.py", "engine/audit.py", "engine/matching.py",
     "engine/forecast.py", "engine/arrival.py", "engine/planning.py",
+    "engine/allocate.py", "engine/charting.py",
     "fixtures/generate.py",
     "tools/fetcher.py", "tools/compliance.py", "tools/execution.py",
     "tools/exposure.py", "tools/precedent.py", "tools/inventory.py",
-    "tools/impact.py", "tools/supervisor.py",
+    "tools/impact.py", "tools/supervisor.py", "tools/analyst.py",
     "agents/definitions.py", "graph.py", "mcp.py",
     "signals/bmkg.py", "signals/watch.py",
 ]
@@ -50,7 +51,11 @@ def check() -> None:
     declared = sum(len(a.tools) for a in ALL.values())
 
     print(f"\n  agents  : {len(ALL)}")
-    print(f"  tools   : {len(installed)}/{declared} installed")
+    # "38/37" read like a fault. A universal tool is owned by no agent on
+    # purpose, so it is counted separately rather than making the ratio lie.
+    shared = {t.name for t in registry.universal()}
+    print(f"  tools   : {len(installed) - len(shared)}/{declared} owned"
+          + (f" + {len(shared)} universal" if shared else ""))
     print(f"  prompts : {len(ALL) - len(no_prompt)}/{len(ALL)} written")
 
     if no_prompt:

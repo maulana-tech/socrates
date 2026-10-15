@@ -7,9 +7,11 @@ meant graph.py on its own had an empty registry: it worked only because api.py
 happened to import the tools before it imported graph. Import order is not a
 place to keep a guarantee.
 
-One file per agent, named after the agent's code.
+One file per agent, named after the agent's code, plus analyst.py,
+which holds the tools every agent may call.
 """
 from tools import (  # noqa: F401
+    analyst,
     compliance,
     demand,
     execution,

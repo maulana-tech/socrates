@@ -61,6 +61,13 @@ class Entry:
 class Board:
     """The shared blackboard. Every specialist reads and writes here."""
     entries: Dict[str, Entry] = field(default_factory=dict)
+    #: Charts drawn from the entries above during this turn. A list rather
+    #: than a dict because one answer may want two of them, and keying on the
+    #: tool name would mean the second quietly replaced the first.
+    charts: List[dict] = field(default_factory=list)
+
+    def add_chart(self, spec: dict) -> None:
+        self.charts.append(spec)
 
     def write(self, key: str, r: Result) -> None:
         self.entries[key] = Entry(r.value, r.origin.value, r.source,
@@ -202,7 +209,12 @@ def _tool_loop(cl, agent: Agent, task: str, board: Board,
         f"{task}\n\n"
         f"What is on the shared board right now:\n{board.summary()}\n\n"
         "Use your tools as needed, then write up what you found. If data you "
-        "need is unavailable, say what is missing, do not guess."
+        "need is unavailable, say what is missing, do not guess.\n\n"
+        "When your answer is a comparison across more than about four rows, or "
+        "a movement over time, draw it with chart_finding and write one "
+        "sentence reading it. A chart plus a sentence is read in seconds; the "
+        "same figures as a paragraph are read by nobody. Pass the board key of "
+        "something you have already read, never the numbers themselves."
     )
     messages: List[dict] = [*(history or []), {
         "role": "user",
@@ -444,6 +456,9 @@ def ask_specialist(code: str, question: str,
         "role": agent.title,
         "answer": answer,
         "tools_used": [t["name"] for t in trail if t["kind"] == "tool"],
+        # The prose and the charts are one answer. They travel together so the
+        # surface rendering this turn does not have to go looking.
+        "charts": board.charts,
         "board": {k: {"origin": board.origin[k], "source": board.source[k]}
                   for k in board.findings},
         "untrusted": board.untrusted_keys(),
@@ -609,6 +624,26 @@ def demo() -> None:
         print(f"            {k} is {board.origin[k]} from {board.source[k]}")
     print(f"  cost      Rp {cost.idr:,} across {len(cl.calls)} model calls")
     print(f"  answer    {recommendation}")
+
+    # A chart drawn during a turn has to reach the turn, or the prose and the
+    # picture arrive as two unrelated things and the surface has to go hunting.
+    from core import registry as _reg
+    from core.provenance import Origin
+    from tools.analyst import chart_finding
+
+    drawn = Board()
+    drawn.write("impact.get_material_stock", Result(
+        [{"material": "M-4471", "days_left": 9.1, "unit": "TON"},
+         {"material": "M-4472", "days_left": 21.4, "unit": "TON"}],
+        Origin.LIVE, "API_MATERIAL_STOCK_SRV"))
+    with _reg.bind_board(drawn):
+        chart_finding("impact.get_material_stock", "bar", "material", "days_left")
+    assert len(drawn.charts) == 1, drawn.charts
+    assert drawn.charts[0]["origin"] == "live", drawn.charts[0]
+    # The key the surface reads is on the answer, not somewhere else.
+    import inspect
+    assert '"charts": board.charts' in inspect.getsource(ask_specialist)
+    print(f"  charts    {len(drawn.charts)} drawn from the board and carried on the answer")
 
 
 def _check_failure_paths() -> None:

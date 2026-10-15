@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ToolActivity } from "@/components/agent-activity";
 import { AgentBadge } from "@/components/agent-card";
+import { FindingCharts, type FindingChart } from "@/components/finding-chart";
 import { Markdown } from "@/components/markdown";
 import {
   OrchestrationTimeline,
@@ -49,6 +50,7 @@ type Reply = {
   thinking_time?: number;
   steps?: OrchestrationStep[];
   trail?: OrchestrationTrailEntry[];
+  charts?: FindingChart[];
   usage?: UsageOverview;
   tokens?: {
     input: number;
@@ -1138,6 +1140,10 @@ export default function Conversation({
                       <div className="bg-muted/50 rounded-lg rounded-tl-sm border p-4">
                         <Markdown>{m.reply.answer}</Markdown>
                       </div>
+                      {/* Anything the agent drew sits with the prose it belongs
+                          to, carrying the origin badge of the finding behind
+                          it rather than borrowing the answer's credibility. */}
+                      <FindingCharts charts={m.reply.charts} />
                       <ToolActivity tools={m.reply.tools_used ?? []} />
                       {Object.keys(m.reply.board ?? {}).length > 0 && (
                         <div className="flex flex-wrap gap-1.5">

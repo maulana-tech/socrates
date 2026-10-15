@@ -118,7 +118,20 @@ def demo() -> None:
     import tools as _tools  # noqa: F401  (registers every tool)
     from core import registry
 
-    declared, installed = set(tools), set(registry.all_tools())
+    # A universal tool belongs to no agent on purpose: presentation is not a
+    # domain, so every agent is shown it. It is exempt from ownership, and the
+    # exemption is checked rather than assumed, or "no agent owns it" would
+    # become a hole anything could be dropped through.
+    shared = {t.name for t in registry.universal()}
+    for name in shared:
+        assert registry.get(name).owner == registry.UNIVERSAL, name
+        assert name not in tools, f"{name} is universal and also claimed by an agent"
+        # And every agent must actually be shown it.
+        for a in ALL.values():
+            assert any(x["name"] == name for x in registry.schemas_for_model(a.code)), \
+                f"{a.nickname} is not shown the universal tool {name}"
+
+    declared, installed = set(tools), set(registry.all_tools()) - shared
     assert not declared - installed, f"claimed but not written: {sorted(declared - installed)}"
     assert not installed - declared, f"written but no agent owns it: {sorted(installed - declared)}"
     veto = [a.code for a in ALL.values() if a.veto]
@@ -138,7 +151,15 @@ def demo() -> None:
         own = (PROMPTS / f"{a.code}.txt").read_text()
         for tool in a.tools:
             assert tool in own, f"{a.nickname} owns {tool} and is never told about it"
-    print(f"  prompts name all {len(ALL) - 1} specialists and every tool they own")
+    # A universal tool is introduced once, in graph._tool_loop, rather than
+    # pasted into twelve prompts. So it is exempt here, and the instruction is
+    # checked where it actually lives.
+    loop = (pathlib.Path(__file__).resolve().parent.parent / "graph.py").read_text()
+    for name in shared:
+        assert name in loop, f"{name} is universal and no agent is ever told about it"
+
+    print(f"  prompts name all {len(ALL) - 1} specialists and every tool they own, "
+          f"plus {len(shared)} universal tool(s) introduced in the loop")
     assert len({n[0] for n in nicknames}) == len(nicknames), "first letters must all differ"
     print(f"definitions ok, {len(ALL)} agents, {len(tools)} tools, veto: {veto[0]}")
     print("  " + " · ".join(f"{a.nickname} ({a.title})" for a in ALL.values()))

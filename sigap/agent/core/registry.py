@@ -28,6 +28,12 @@ class Tool:
     fn: Callable[..., Result]
 
 
+#: Owner code for a tool every agent may call. Presentation is not a domain:
+#: drawing a finding is available to whoever found it, the same way writing a
+#: sentence is. A tool registered here belongs to no agent and is appended to
+#: every agent's schema list.
+UNIVERSAL = "*"
+
 _REGISTRY: Dict[str, Tool] = {}
 
 
@@ -59,11 +65,22 @@ def owned_by(agent_code: str) -> List[Tool]:
     return [t for t in _REGISTRY.values() if t.owner == agent_code]
 
 
+def universal() -> List[Tool]:
+    return owned_by(UNIVERSAL)
+
+
 def schemas_for_model(agent_code: str) -> List[dict]:
-    """The shape sent to Claude as the `tools` parameter."""
+    """The shape sent to Claude as the `tools` parameter.
+
+    An agent is shown what it owns plus the universal tools. Asking for the
+    universal owner code itself returns only those, so nothing is doubled.
+    """
+    own = owned_by(agent_code)
+    if agent_code != UNIVERSAL:
+        own = own + universal()
     return [
         {"name": t.name, "description": t.description, "input_schema": t.schema, "strict": True}
-        for t in owned_by(agent_code)
+        for t in own
     ]
 
 
