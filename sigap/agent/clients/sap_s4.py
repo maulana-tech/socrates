@@ -29,6 +29,27 @@ def base_url() -> str:
     return CFG.sap_base_url
 
 
+#: The OData path between the host and the service name. The public sandbox
+#: fronts a tenant and puts /s4hanacloud in front of everything; a real
+#: S/4HANA Cloud system serves the services at its own root. This was hardcoded
+#: to the sandbox form in three places, so SAP_BASE_URL looked like it could be
+#: pointed anywhere and could not.
+SANDBOX_PREFIX = "/s4hanacloud/sap/opu/odata/sap"
+TENANT_PREFIX = "/sap/opu/odata/sap"
+
+
+def odata_prefix() -> str:
+    """Where this host keeps its OData services.
+
+    Derived from the host so both shapes work without configuration, and
+    overridable because a tenant behind a gateway may use neither.
+    """
+    override = os.environ.get("SAP_ODATA_PREFIX", "").strip()
+    if override:
+        return "/" + override.strip("/")
+    return SANDBOX_PREFIX if "sandbox.api.sap.com" in base_url() else TENANT_PREFIX
+
+
 def api_key() -> str:
     return CFG.sap_api_key
 
@@ -73,7 +94,7 @@ def get(service: str, entity: str, params: Optional[Dict[str, Any]] = None) -> d
 
     q = dict(params or {})
     q.setdefault("$format", "json")
-    url = (f"{base_url()}/s4hanacloud/sap/opu/odata/sap/{service}/{entity}"
+    url = (f"{base_url()}{odata_prefix()}/{service}/{entity}"
            f"?{urllib.parse.urlencode(q)}")
 
     req = urllib.request.Request(url, headers={"APIKey": api_key(),
@@ -101,7 +122,7 @@ class CsrfFailed(SapError):
 
 def _csrf_token(service: str) -> Tuple[str, str]:
     """SAP OData v2 refuses writes without a CSRF token. Fetch it, keep the cookie."""
-    url = f"{base_url()}/s4hanacloud/sap/opu/odata/sap/{service}/"
+    url = f"{base_url()}{odata_prefix()}/{service}/"
     req = urllib.request.Request(url, headers={
         "APIKey": api_key(), "X-CSRF-Token": "Fetch", "Accept": "application/json"})
     try:
@@ -128,7 +149,7 @@ def post(service: str, entity: str, payload: dict,
         raise MissingApiKey("SAP_API_KEY is not set. The write to SAP is refused")
 
     token, cookie = _csrf_token(service)
-    url = f"{base_url()}/s4hanacloud/sap/opu/odata/sap/{service}/{entity}"
+    url = f"{base_url()}{odata_prefix()}/{service}/{entity}"
     headers = {
         "APIKey": api_key(),
         "X-CSRF-Token": token,

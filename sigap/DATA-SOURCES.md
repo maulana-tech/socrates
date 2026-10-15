@@ -2,6 +2,12 @@
 
 > Checked on 21 September 2026 by opening each source directly. Earlier drafts had some
 > of these marked "unchecked"; they are not any more.
+>
+> **This document says where data could come from. `SAP-INTEGRATION.md` says how the
+> code actually gets it**, and it is the one to trust on service names, joins, what
+> answers 403, and the state of the key. The SAP row below reads "ready", which was
+> true when it was written and is now narrower than that: the sandbox quota is
+> exhausted and two write targets refuse.
 
 ---
 

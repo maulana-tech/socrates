@@ -38,6 +38,11 @@ open http://localhost:3000/dashboard
 | Work out where data comes from | `DATA-SOURCES.md` |
 | Know which AWS and SAP services we use | `BUILD-SPEC.md` |
 | See what AWS and SAP themselves publish | `RESEARCH-AWS-SAP.md` |
+| Understand how the code is put together | `ARCHITECTURE.md` |
+| Know exactly how SAP is wired, and what refuses | `SAP-INTEGRATION.md` |
+| Set up a machine, key by key, to hand to someone | `ENV.md` |
+| See the operating build and what is left of it | `PLAN-OPERATE.md` |
+| Deploy the agent service on its own | `AGENT-ONLY-EXTERNAL-DEPLOYMENT.md` |
 
 ## Contents
 
@@ -47,6 +52,10 @@ open http://localhost:3000/dashboard
 | **`SETUP.md`** | From a clone to a system that reasons. Every step ends with a test |
 | **`AGENT-REFERENCE.md`** | All 12 agents: tools, parameters, limits. **Generated**, `manage.py docs` |
 | **`AWS-PLAN.md`** | Getting onto Bedrock and AgentCore, in the order that survives contact with a loop that has never run |
+| **`ARCHITECTURE.md`** | The layers and which may import which, the read path, where determinism ends and the model begins, the four cadences, the loop |
+| **`SAP-INTEGRATION.md`** | Where SAP points, every service and join, what 403s, the rate limit, and what changes for a real tenant |
+| **`ENV.md`** | Every variable, what it unlocks, and which keys were rotated |
+| `PLAN-OPERATE.md` | The build that turned this from responding to operating |
 | `DESIGN.md` | Scenario figures, local rules, the eval suite |
 | `TECHNICAL.md` | Exact function names and parameters |
 | `DATA-SOURCES.md` | What was verified about each data source |
@@ -73,8 +82,21 @@ cd agent && PYTHONPATH=. python3 engine/simulate.py
 
 If a figure in a document cannot be reproduced by that command, **the document is wrong.**
 
-**What is blocking, right now**, `PYTHONPATH=. python3 manage.py check` prints this
-live, but in short: `SAP_API_KEY`, `AWS_REGION`, and `references/` (the TKDN & LARTAS
-rules). All 12 prompts are written and all 31 tools are installed. The SAP key is
-self-service and takes 15 minutes; `references/` needs nobody's permission and is
-domain work, not code. `SETUP.md` is the runbook for the two keys.
+**What is blocking, right now.** Ask the machine rather than this paragraph, which
+has been wrong before:
+
+```bash
+cd agent && PYTHONPATH=. python3 manage.py check
+```
+
+It prints the agent, tool and prompt counts live and names the keys that are not
+set. A count written here instead goes stale the first time somebody adds a tool,
+and this file claimed 31 for a while after there were more.
+
+As of 15 October 2026 the shape of it is: `references/` is written, nine documents
+and 57 parameters, and it drives the rulings rather than decorating them. The SAP
+key is set but its **quota is exhausted**, so every read falls back to labelled
+modelled data with the reason attached, see `SAP-INTEGRATION.md`. `AWS_REGION` is
+not set, so the agents do not reason on this machine and every handling stays in
+guided mode. That last one is the only remaining blocker to the system deciding
+anything, and it is deliberate: without a model it refuses rather than guessing.
