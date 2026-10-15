@@ -216,6 +216,14 @@ The quota is **per API key**, enforced at SAP's gateway, and it is exhausted as
 of 15 October 2026. Every service, read and write, answers this. A fresh key
 resets it.
 
+**The `Identifier` in that body is the API key itself.** It is redacted above,
+and it was not when this document was first written: the fault body was pasted
+in verbatim and the live key went into a committed file. It was caught before
+the branch was pushed, by grepping the outgoing diff for the values in `.env`,
+and the history was rewritten to remove it. Do that grep before any push that
+touches this document, and treat a quota fault body as a secret rather than as
+an error message.
+
 Note the shape: the gateway returns **500**, not 429, with the real reason in
 the body. Anything matching on the status code alone will read a quota as a
 server fault.
