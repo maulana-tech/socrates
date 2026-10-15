@@ -542,7 +542,11 @@ def save_upload(entity: str, filename: str, payload: list, uploaded_by: str,
 def latest_upload(entity: str) -> Optional[dict]:
     """The most recent upload for one entity, if any."""
     with connect() as c:
-        r = c.execute("SELECT * FROM uploads WHERE entity=? ORDER BY uploaded_at DESC LIMIT 1",
+        # rowid breaks the tie. uploaded_at has second resolution, so two
+        # files sent for one entity inside the same second ordered
+        # arbitrarily, and a correction could lose to the file it corrected.
+        r = c.execute("SELECT * FROM uploads WHERE entity=?"
+                      " ORDER BY uploaded_at DESC, rowid DESC LIMIT 1",
                       (entity,)).fetchone()
     return dict(r) | {"payload": json.loads(r["payload"])} if r else None
 

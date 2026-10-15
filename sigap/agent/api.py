@@ -234,8 +234,10 @@ def upload(_m, b: dict, h) -> Tuple[int, dict]:
     entity = b.get("entity")
     filename = b.get("filename", "untitled.csv")
     body = b.get("csv", "")
+    # Profile arrives flat, one facility per row with the company columns
+    # repeated, which is the shape an ERP extract comes out in.
     allowed = {"MaterialStock", "PurchaseOrder", "SalesOrder",
-               "BillOfMaterial", "AlternateSource"}
+               "BillOfMaterial", "AlternateSource", "Profile"}
     if entity not in allowed:
         return 400, {"error": f"entity must be one of {sorted(allowed)}"}
     if not body.strip():

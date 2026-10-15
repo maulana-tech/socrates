@@ -9,7 +9,7 @@ import json
 import pathlib
 import re
 from datetime import date, datetime, timezone
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from clients import sap_s4
 from core.provenance import Origin, Result
@@ -25,8 +25,70 @@ def fixture(entity: str) -> List[dict]:
     return _cache[entity]
 
 
+#: Company-level profile columns an engine actually reads.
+PROFILE_FIELDS = ("Company", "AsOfDate", "TkdnCurrentPct", "TkdnContractFloorPct")
+
+
+def _num(v) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _profile_from_upload(rows: list) -> Tuple[Optional[dict], List[str]]:
+    """One flat CSV into the nested profile, or None and what it was missing.
+
+    An ERP extract is flat, so a profile arrives denormalised: the company
+    columns repeat on every row and each row carries one facility. Rebuilding
+    it here beats asking an operator to hand-write nested JSON.
+    """
+    head = rows[0] if rows and isinstance(rows[0], dict) else {}
+    missing = [k for k in PROFILE_FIELDS if head.get(k) in (None, "")]
+    facilities = []
+    for r in rows:
+        if not isinstance(r, dict) or not r.get("code"):
+            continue
+        lat, lon = _num(r.get("lat")), _num(r.get("lon"))
+        if lat is None or lon is None:
+            continue
+        facilities.append({"code": str(r["code"]), "kind": str(r.get("kind") or "plant"),
+                           "name": str(r.get("name") or r["code"]), "lat": lat, "lon": lon})
+    if not facilities:
+        missing.append("a facility row carrying code, lat and lon")
+    if missing:
+        return None, missing
+    return {k: head[k] for k in PROFILE_FIELDS} | {"Facilities": facilities}, []
+
+
+def profile_result() -> Result:
+    """Whose installation this is, and how we know.
+
+    Every other entity already lets a company's own upload outrank the built-in
+    figures. The profile did not, so an operator who loaded their own master
+    data was still judged against the reference installation's TKDN position
+    and measured against its plant coordinates. That is the one place where a
+    worked example quietly became an assumption about the customer.
+    """
+    own = _uploaded("Profile", None)
+    if own is not None and own.value:
+        built, missing = _profile_from_upload(own.value)
+        if built is not None:
+            return Result(built, own.origin, own.source, note=own.note)
+        # Half a profile is worse than none: merging it over the built-in one
+        # would hand this company the reference installation's plants.
+        return Result(
+            fixture("Profile"), Origin.MODELLED, "fixture:Profile",
+            note="an uploaded profile was ignored, it has no "
+                 + ", ".join(missing) + ". Using the reference installation",
+        )
+    return Result(fixture("Profile"), Origin.MODELLED, "fixture:Profile",
+                  note="reference installation, not this company's own master data")
+
+
 def profile() -> dict:
-    return fixture("Profile")  # type: ignore[return-value]
+    """The engines want a plain dict. profile_result() carries the provenance."""
+    return profile_result().value  # type: ignore[return-value]
 
 
 #: Hosts that serve a demonstration dataset rather than a company's records.
@@ -383,6 +445,37 @@ def demo() -> None:
     if is_mock_sap():
         assert gen.origin is Origin.MODELLED and not gen.trusted, gen.origin
         print("  a file declared as generated stays modelled ✓")
+
+    # The profile is the one entity that used to ignore an upload, which meant
+    # every installation was judged against the reference company's TKDN
+    # position and measured from its plant coordinates.
+    base = profile_result()
+    assert base.origin is Origin.MODELLED, base.origin
+    assert "Reference" in base.value["Company"], base.value["Company"]
+
+    store.save_upload("Profile", "kpn-profile.csv", [
+        {"Company": "PT Contoh Presisi", "AsOfDate": "2026-10-15",
+         "TkdnCurrentPct": 44.0, "TkdnContractFloorPct": 40.0,
+         "code": "CKR1", "kind": "plant", "name": "Cikarang",
+         "lat": -6.2608, "lon": 107.1526},
+    ], "ops@example.com")
+    own = profile_result()
+    assert own.origin is Origin.CACHED and own.trusted, own.brief()
+    assert own.value["Company"] == "PT Contoh Presisi", own.value
+    assert [f["code"] for f in own.value["Facilities"]] == ["CKR1"], own.value
+    assert "KRW1" not in str(own.value), "the reference installation's plants leaked through"
+    print(f"  profile follows the upload: {base.value['Company']} -> "
+          f"{own.value['Company']}, {len(own.value['Facilities'])} facility ✓")
+
+    # Half a profile must be refused outright. Merging it would hand this
+    # company the reference installation's plants and call them its own.
+    store.save_upload("Profile", "partial.csv",
+                      [{"Company": "PT Setengah"}], "ops@example.com")
+    half = profile_result()
+    assert half.origin is Origin.MODELLED, half.brief()
+    assert half.value["Company"] == base.value["Company"], half.value
+    assert "ignored" in half.note and "TkdnCurrentPct" in half.note, half.note
+    print(f"  and refuses half of one: {half.note[:58]}... ✓")
 
     print("fetcher ok")
 
