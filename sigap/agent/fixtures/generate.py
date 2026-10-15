@@ -49,6 +49,14 @@ PORTS = {
     "TH": "THLCH", "MY": "MYPKG", "ID": "IDTPP",
 }
 
+#: Plausible order-to-promise bands by origin, in days. Imports run weeks,
+#: domestic runs days, and the spread inside each band is what makes a
+#: supplier's reliability measurable at all.
+LEAD_DAYS = {
+    "CN": (28, 45), "KR": (24, 38), "JP": (22, 36), "VN": (26, 42),
+    "TH": (18, 30), "MY": (14, 26), "ID": (6, 16),
+}
+
 # Invented suppliers. Indonesian ones carry a PT prefix as they would locally.
 SUPPLIERS = [
     ("SUP-2201", "Ningbo Yongtai Metals", "CN", 38.2),
@@ -216,8 +224,21 @@ def build() -> dict:
 
     # ---- bill of materials ------------------------------------------------
     bom = []
+    # The documented scenario is a shortage of M-4471, ADC12 alloy, and the
+    # brake caliper is what it is cast into. Left to the sampler it was in no
+    # bill of materials at all, which meant nothing could trace the shortage
+    # to a customer order and every late-delivery penalty computed as zero.
+    # The scenario figures are pinned elsewhere in this file for the same
+    # reason: a random draw must not decide what the demo is about.
+    pinned = {("M-4471", "FG-1120"): 2, ("M-4471", "FG-2040"): 1}
+    for (comp, fg), qty in pinned.items():
+        bom.append({"Material": comp, "FinishedGood": fg,
+                    "Description": dict((f, d) for f, d, _ in FINISHED)[fg],
+                    "ComponentQuantity": qty})
+
     for fg, fg_desc, n_components in FINISHED:
-        pool = [m for m, _, _, _ in MATERIALS if m != "M-1208"]
+        pool = [m for m, _, _, _ in MATERIALS
+                if m != "M-1208" and (m, fg) not in pinned]
         for comp in rnd.sample(pool, n_components):
             bom.append({"Material": comp, "FinishedGood": fg, "Description": fg_desc,
                         "ComponentQuantity": rnd.choice([1, 1, 2, 2, 4, 6, 8])})
@@ -283,8 +304,13 @@ def build() -> dict:
         promised = AS_OF + timedelta(days=rnd.randint(4, 40))
         slip = rnd.choice([0, 0, 0, 2, 5, 8])
         n += rnd.randint(1, 3)
+        # Ordered-on, so a lead time can be measured instead of assumed. Real
+        # purchase orders carry it; leaving it out meant every reorder point
+        # in the system fell back to a written default.
+        lead = rnd.randint(*LEAD_DAYS.get(origin, (20, 40)))
         orders.append({
             "PurchaseOrder": str(n), "Material": code, "Plant": row["Plant"],
+            "PurchaseOrderDate": (promised - timedelta(days=lead)).isoformat(),
             "OrderQuantity": round(row["DailyConsumption"] * rnd.randint(10, 30), 1),
             "BaseUnit": row["BaseUnit"], "Supplier": supplier,
             "LoadingPort": PORTS[origin],
@@ -294,31 +320,31 @@ def build() -> dict:
         })
 
     # the Ningbo scenario, fixed so the documented figures still reproduce
-    orders.append({"PurchaseOrder": "4500018872", "Material": "M-4471", "Plant": "KRW1",
+    orders.append({"PurchaseOrder": "4500018872", "PurchaseOrderDate": "2026-07-28", "Material": "M-4471", "Plant": "KRW1",
                    "OrderQuantity": 120.0, "BaseUnit": "TON", "Supplier": "SUP-2201",
                    "LoadingPort": "CNNGB", "DeliveryDate": "2026-09-14",
                    "RevisedDeliveryDate": "2026-09-22", "Status": "in_transit"})
-    orders.append({"PurchaseOrder": "4500018901", "Material": "M-4471", "Plant": "SBY1",
+    orders.append({"PurchaseOrder": "4500018901", "PurchaseOrderDate": "2026-08-05", "Material": "M-4471", "Plant": "SBY1",
                    "OrderQuantity": 90.0, "BaseUnit": "TON", "Supplier": "SUP-2201",
                    "LoadingPort": "CNNGB", "DeliveryDate": "2026-09-24",
                    "RevisedDeliveryDate": "2026-09-24", "Status": "not_shipped"})
     # planted defect: revised earlier than promised
-    orders.append({"PurchaseOrder": "4500019204", "Material": "M-8830", "Plant": "KRW1",
+    orders.append({"PurchaseOrder": "4500019204", "PurchaseOrderDate": "2026-08-22", "Material": "M-8830", "Plant": "KRW1",
                    "OrderQuantity": 600.0, "BaseUnit": "LTR", "Supplier": "SUP-8801",
                    "LoadingPort": "THLCH", "DeliveryDate": "2026-10-02",
                    "RevisedDeliveryDate": "2026-09-27", "Status": "in_transit"})
     # planted defect: overdue and still not shipped
-    orders.append({"PurchaseOrder": "4500018640", "Material": "M-7710", "Plant": "SBY1",
+    orders.append({"PurchaseOrder": "4500018640", "PurchaseOrderDate": "2026-07-02", "Material": "M-7710", "Plant": "SBY1",
                    "OrderQuantity": 24000.0, "BaseUnit": "PC", "Supplier": "SUP-8815",
                    "LoadingPort": "MYPKG", "DeliveryDate": "2026-08-18",
                    "RevisedDeliveryDate": "2026-08-18", "Status": "not_shipped"})
     # planted defect: a line ordering nothing
-    orders.append({"PurchaseOrder": "4500019310", "Material": "M-9916", "Plant": "CKR1",
+    orders.append({"PurchaseOrder": "4500019310", "PurchaseOrderDate": "2026-09-01", "Material": "M-9916", "Plant": "CKR1",
                    "OrderQuantity": 0.0, "BaseUnit": "PC", "Supplier": "SUP-6622",
                    "LoadingPort": "JPYOK", "DeliveryDate": "2026-10-11",
                    "RevisedDeliveryDate": "2026-10-11", "Status": "not_shipped"})
     # the duplicate supplier, used once so the audit can see it in traffic
-    orders.append({"PurchaseOrder": "4500019288", "Material": "M-4472", "Plant": "KRW1",
+    orders.append({"PurchaseOrder": "4500019288", "PurchaseOrderDate": "2026-09-12", "Material": "M-4472", "Plant": "KRW1",
                    "OrderQuantity": 40.0, "BaseUnit": "TON", "Supplier": "SUP-4417B",
                    "LoadingPort": "IDTPP", "DeliveryDate": "2026-09-30",
                    "RevisedDeliveryDate": "2026-09-30", "Status": "not_shipped"})
@@ -332,6 +358,11 @@ def build() -> dict:
             sales.append({
                 "SalesOrder": f"{so:010d}", "Material": fg, "Customer": cust[0],
                 "CustomerName": cust[1],
+                # How many units are promised. Without it nothing can work out
+                # how much of a scarce component one order consumes, which is
+                # the whole arithmetic of allocation.
+                "OrderQuantity": float(rnd.randrange(40, 400)),
+                "BaseUnit": "PC",
                 "NetAmount": rnd.randrange(180, 1400) * 1_000_000,
                 "Currency": "IDR",
                 "RequestedDeliveryDate": (AS_OF + timedelta(days=rnd.randint(10, 75))).isoformat(),
@@ -340,16 +371,18 @@ def build() -> dict:
     # planted defect: sold product with no bill of materials behind it
     sales.append({"SalesOrder": "0000105990", "Material": "FG-9099",
                   "Customer": "CUS-1002", "CustomerName": "Nusa Otomotif Industri",
+                  "OrderQuantity": 120.0, "BaseUnit": "PC",
                   "NetAmount": 310_000_000, "Currency": "IDR",
                   "RequestedDeliveryDate": "2026-11-05",
                   "LatePenaltyPctPerDay": 0.5, "LatePenaltyCapPct": 10.0})
     # the three FG-1120 orders the documented scenario rests on
     sales = [s for s in sales if s["Material"] != "FG-1120"]
-    for sid, amount, cust in (("0000104411", 980_000_000, "CUS-1001"),
-                              ("0000104427", 715_000_000, "CUS-1001"),
-                              ("0000104455", 445_000_000, "CUS-1003")):
+    for sid, amount, cust, qty in (("0000104411", 980_000_000, "CUS-1001", 320.0),
+                                   ("0000104427", 715_000_000, "CUS-1001", 240.0),
+                                   ("0000104455", 445_000_000, "CUS-1003", 150.0)):
         sales.append({"SalesOrder": sid, "Material": "FG-1120", "Customer": cust,
                       "CustomerName": dict(CUSTOMERS)[cust], "NetAmount": amount,
+                      "OrderQuantity": qty, "BaseUnit": "PC",
                       "Currency": "IDR", "RequestedDeliveryDate": "2026-09-30",
                       "LatePenaltyPctPerDay": 0.5, "LatePenaltyCapPct": 10.0})
 
@@ -395,7 +428,11 @@ def build() -> dict:
     # document already quotes from the rows above.
     quotations = _quotations(orders, random.Random(SEED + 1))
 
-    history = _consumption_history(stock, rnd)
+    # Its own stream, deliberately. Sharing `rnd` meant that adding a row to
+    # the bill of materials shifted every withdrawal in the history, and the
+    # consumption figures quoted in DESIGN.md moved with it. The documented
+    # scenario has to be stable against changes that have nothing to do with it.
+    history = _consumption_history(stock, random.Random(HISTORY_SEED))
 
     return {"MaterialStock": stock, "PurchaseOrder": orders, "BillOfMaterial": bom,
             "SalesOrder": sales, "AlternateSource": alternates, "Supplier": suppliers,
@@ -408,6 +445,9 @@ def build() -> dict:
 DRIFTING = {"M-4471": 1.13, "M-3308": 1.06, "M-5518": 0.91}
 
 HISTORY_DAYS = 120
+
+#: Fixed so the withdrawal history does not move when anything else does.
+HISTORY_SEED = 20260904
 
 
 def _quotations(orders: list, rnd: random.Random) -> list:

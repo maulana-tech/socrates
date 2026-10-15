@@ -549,3 +549,92 @@ def propose_purchase_order(material: str, supplier: str, qty: float,
          "action_status": (raised.value or {}).get("status")},
         quotes.origin, quotes.source, note=note,
     )
+
+
+@register(
+    "review_replenishment", "procurement",
+    "The daily ordering review: every position whose stock has fallen to or near its "
+    "reorder point, with how much to order and why. Counts supply already in transit "
+    "and stock already promised to another handling, so it does not order twice. "
+    "Deterministic, and it names the positions it could not plan rather than leaving "
+    "them out.",
+    {"plant": {"type": ["string", "null"]},
+     "status": {"type": ["string", "null"],
+                "description": "order_now | watch | ok | all. Default is order_now "
+                               "and watch, which is the worklist"}},
+)
+def review_replenishment(plant: Optional[str] = None,
+                         status: Optional[str] = None) -> Result:
+    from datetime import date as _date
+
+    from core import store
+    from engine.planning import net_requirement
+    from tools.inventory import policies
+
+    found, skipped, stock, orders, hist = policies(plant=plant)
+    if not found and not skipped:
+        return Result(None, Origin.MISSING, stock.source,
+                      note=stock.note or "no stock positions to review")
+
+    start = _date.fromisoformat(str(profile()["AsOfDate"])[:10])
+
+    # Supply already on the water, per position. Ordering again because this
+    # was not counted is the most expensive arithmetic mistake in purchasing.
+    incoming: Dict[tuple, float] = {}
+    for o in (orders.value or []):
+        due = o.get("RevisedDeliveryDate") or o.get("DeliveryDate")
+        if not due or o.get("Status") == "received":
+            continue
+        try:
+            if _date.fromisoformat(str(due)[:10]) < start:
+                continue
+        except ValueError:
+            continue
+        key = (o.get("Material"), o.get("Plant"))
+        incoming[key] = incoming.get(key, 0.0) + float(o.get("OrderQuantity") or 0)
+
+    # "all" exists because a measure over the flagged rows alone is not a
+    # measure over the book, and the scorecard was quietly reporting the
+    # median cover of the worst positions as the median of everything.
+    wanted = ({"order_now", "watch", "ok", "no_demand"} if status == "all"
+              else {status} if status else {"order_now", "watch"})
+    rows, ordering = [], 0.0
+    for pol, srow in found:
+        key = (pol.material, pol.plant)
+        try:
+            held = store.reserved_qty(pol.material, pol.plant)
+        except Exception:                                        # noqa: BLE001
+            held = 0.0
+        req = net_requirement(pol, float(srow.get("MatlWrhsStkQtyInMatlBaseUnit") or 0),
+                              incoming.get(key, 0.0), held, start)
+        if req.status not in wanted:
+            continue
+        if req.status == "order_now":
+            ordering += req.order_qty
+        rows.append(req.as_dict() | {
+            "description": srow.get("Description"),
+            "unit": srow.get("BaseUnit"),
+            "safety_stock": round(pol.safety_stock, 1),
+            "safety_days": round(pol.safety_days, 1),
+            "lead_time_days": round(pol.lead_time.mean, 1),
+            "lead_time_assumed": pol.lead_time.assumed,
+            "demand_variability_pct": round(pol.demand.variability * 100, 1),
+            "policy_reasons": pol.reasons,
+        })
+
+    # Most urgent first: least cover, then largest order.
+    rows.sort(key=lambda r: (r["cover_days"] if r["cover_days"] is not None else 1e9,
+                             -r["order_qty"]))
+
+    now = sum(1 for r in rows if r["status"] == "order_now")
+    assumed = sum(1 for r in rows if r["lead_time_assumed"])
+    return Result(
+        {"reviewed": len(found), "flagged": len(rows), "order_now": now,
+         "units_to_order": round(ordering, 1), "rows": rows,
+         "unplannable": skipped},
+        Origin.DERIVED if stock.origin is not Origin.MISSING else Origin.MISSING,
+        f"engine/planning.py over {hist} + {stock.source}",
+        note="; ".join(filter(None, [
+            f"{len(skipped)} position(s) have too little history to plan" if skipped else "",
+            f"{assumed} flagged position(s) run on an assumed lead time" if assumed else "",
+        ])))

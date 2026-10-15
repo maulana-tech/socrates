@@ -52,7 +52,8 @@ SPECIALISTS = [
           "Traces a disruption through orders, stock, and the bill of materials to the "
           "customer commitments genuinely at risk.",
           ["get_open_purchase_orders", "get_material_stock",
-           "get_bom_explosion", "get_sales_order_commitments"]),
+           "get_bom_explosion", "get_sales_order_commitments",
+           "check_order_promise", "propose_allocation"]),
     Agent("demand", "Dara", "Demand",
           "Owns the demand side. Daily consumption is a variable that moves, not a fixed number.",
           ["get_demand_signal", "get_production_schedule", "forecast_demand"]),
@@ -69,7 +70,8 @@ SPECIALISTS = [
           "on price against lead time, and drafts the purchase order that follows from "
           "the comparison.",
           ["get_supplier_master", "get_supplier_performance", "get_quotations",
-           "compare_quotations", "propose_purchase_order"]),
+           "compare_quotations", "propose_purchase_order",
+           "review_replenishment"]),
     Agent("logistics", "Milo", "Logistics",
           "Models arrival dates that survive contact with reality: port dwell, transhipment, "
           "customs, transport mode.",
