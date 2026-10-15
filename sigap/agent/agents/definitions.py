@@ -84,8 +84,10 @@ SPECIALISTS = [
           ["simulate_scenario"]),
     Agent("precedent", "Otto", "Precedent",
           "Institutional memory: what was done last time something like this happened, "
-          "and how it turned out.",
-          ["search_past_incidents"]),
+          "and how it turned out. Two separate memories, and he never mixes them: this "
+          "company's finished runs, and a library of documented real disruptions that "
+          "happened to other companies.",
+          ["search_past_incidents", "search_industry_precedents"]),
     Agent("execution", "Bram", "Execution",
           "Writes back to SAP within its authority, tells the affected roles, watches "
           "through to receipt, and records what actually happened so the next "

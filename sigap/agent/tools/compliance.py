@@ -21,13 +21,13 @@ LARTAS_WORKING_DAYS_NEW_ORIGIN = 10
 
 
 def _rule_pack() -> Dict[str, str]:
-    """Read the rule documents. If one isn't written yet, say so, don't guess."""
-    out: Dict[str, str] = {}
-    for name in ("tkdn-rules", "lartas-procedure", "holiday-calendar", "priok-dwell-time"):
-        f = REFERENCES / f"{name}.md"
-        if f.exists():
-            out[name] = f.read_text()
-    return out
+    """Read every rule document in references/, keyed by filename stem.
+
+    Globbed rather than listed: a document added to references/ and not added
+    to a tuple in here is a rule nobody enforces, and the list fell out of date
+    the first time one was written.
+    """
+    return {f.stem: f.read_text() for f in sorted(REFERENCES.glob("*.md"))}
 
 
 def rule_params(pack: Dict[str, str]) -> Dict[str, str]:

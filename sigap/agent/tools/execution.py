@@ -27,7 +27,8 @@ AUTONOMOUS_LIMIT_IDR = 50_000_000
 # Absence of precedent is not weak evidence about the material, it is the
 # system's own youth. Everything else on the board describes the situation
 # being acted on, and an untrusted figure there is a reason to ask a person.
-NOT_EVIDENCE = {"precedent.search_past_incidents"}
+NOT_EVIDENCE = {"precedent.search_past_incidents",
+                "precedent.search_industry_precedents"}
 
 
 def autonomy_check(cost_idr: int) -> tuple[bool, str]:
