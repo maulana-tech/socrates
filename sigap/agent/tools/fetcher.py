@@ -29,6 +29,41 @@ def profile() -> dict:
     return fixture("Profile")  # type: ignore[return-value]
 
 
+#: Hosts that serve a demonstration dataset rather than a company's records.
+MOCK_HOSTS = ("sandbox.api.sap.com",)
+
+
+def is_mock_sap() -> bool:
+    return any(h in (sap_s4.base_url() or "") for h in MOCK_HOSTS)
+
+
+def _uploaded(entity: str, keep: Optional[Callable[[dict], bool]]) -> Optional[Result]:
+    """The company's own file, if one was uploaded for this entity.
+
+    Real company data that was uploaded rather than pulled outranks a fixture:
+    it is genuine, just not live. Hence CACHED. A file the uploader declared as
+    generated stays MODELLED, because calling it cached would launder it.
+    """
+    try:
+        from core import store
+        u = store.latest_upload(entity)
+    except Exception:                                            # noqa: BLE001
+        return None
+    if not u:
+        return None
+    data = u["payload"]
+    if keep:
+        data = [r for r in data if keep(r)]
+    generated = bool(u.get("synthetic"))
+    return Result(
+        data,
+        Origin.MODELLED if generated else Origin.CACHED,
+        f"upload:{u['filename']}",
+        note=(f"uploaded {u['uploaded_at']}"
+              + (", declared as generated sample data" if generated else "")),
+    )
+
+
 def pull(
     fixture_entity: str,
     sap_service: str,
@@ -37,6 +72,15 @@ def pull(
     keep: Optional[Callable[[dict], bool]] = None,
 ) -> Result:
     """One read path shared by every read tool."""
+    # A public sandbox is a mock. The company's own uploaded figures are real,
+    # just not live, so they outrank a demo system carrying somebody else's
+    # materials. A genuine S/4HANA tenant still outranks an upload, which is
+    # why this turns on the base URL rather than on a flag.
+    if is_mock_sap():
+        own = _uploaded(fixture_entity, keep)
+        if own is not None:
+            return own
+
     if sap_s4.available():
         try:
             join = JOINS.get(fixture_entity)
@@ -50,26 +94,9 @@ def pull(
         except Exception as e:                                   # noqa: BLE001
             return Result(None, Origin.MISSING, sap_service, note=f"{type(e).__name__}: {e}")
 
-    # Real company data that was uploaded rather than pulled outranks a fixture:
-    # it is genuine, just not live. Hence CACHED. A file the uploader declared
-    # as generated stays MODELLED, because calling it cached would launder it.
-    try:
-        from core import store
-        u = store.latest_upload(fixture_entity)
-    except Exception:                                            # noqa: BLE001
-        u = None
-    if u:
-        data = u["payload"]
-        if keep:
-            data = [r for r in data if keep(r)]
-        generated = bool(u.get("synthetic"))
-        return Result(
-            data,
-            Origin.MODELLED if generated else Origin.CACHED,
-            f"upload:{u['filename']}",
-            note=(f"uploaded {u['uploaded_at']}"
-                  + (", declared as generated sample data" if generated else "")),
-        )
+    own = _uploaded(fixture_entity, keep)
+    if own is not None:
+        return own
 
     data = fixture(fixture_entity)
     if keep:
@@ -323,3 +350,46 @@ def current_dataset() -> tuple[dict, dict]:
         data[entity] = r.value or []
         origins[entity] = {"origin": r.origin.value, "source": r.source, "note": r.note}
     return data, origins
+
+
+def demo() -> None:
+    """The precedence rule, which decides what every figure in the system is."""
+    # A sandbox is a mock, so the company's own file outranks it. A real
+    # tenant would not, which is why this turns on the host.
+    assert "sandbox.api.sap.com" in MOCK_HOSTS[0]
+
+    from core import store
+
+    before = pull("MaterialStock", "API_MATERIAL_STOCK_SRV", "A_MatlStkInAcctMod",
+                  {"$top": "3"})
+    store.save_upload("MaterialStock", "company.csv",
+                      [{"Material": "M-1", "Plant": "P1",
+                        "MatlWrhsStkQtyInMatlBaseUnit": 1.0}], "ops@example.com")
+    after = pull("MaterialStock", "API_MATERIAL_STOCK_SRV", "A_MatlStkInAcctMod",
+                 {"$top": "3"})
+
+    if is_mock_sap():
+        assert after.origin is Origin.CACHED, after.origin
+        assert after.trusted, "the company's own records are real, just not live"
+        assert after.value[0]["Material"] == "M-1", after.value
+        print(f"  upload beats a mock SAP: {before.origin.value} -> {after.origin.value} ✓")
+    else:
+        print("  not pointed at a mock, so the upload rule was not exercised")
+
+    # A file declared as generated must not be laundered into CACHED.
+    store.save_upload("SalesOrder", "sample.csv", [{"Material": "M-1"}],
+                      "ops@example.com", synthetic=True)
+    gen = pull("SalesOrder", "API_SALES_ORDER_SRV", "A_SalesOrder", {"$top": "3"})
+    if is_mock_sap():
+        assert gen.origin is Origin.MODELLED and not gen.trusted, gen.origin
+        print("  a file declared as generated stays modelled ✓")
+
+    print("fetcher ok")
+
+
+if __name__ == "__main__":
+    # This check writes uploads, so it must not touch the operator's record.
+    from core.config import fixtures_only
+
+    fixtures_only(__file__, "SIGAP_FETCHER_CHECK")
+    demo()
