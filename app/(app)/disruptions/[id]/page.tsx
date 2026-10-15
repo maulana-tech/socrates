@@ -6,6 +6,7 @@ import { StepSummary, stageLabel, stepAgentName } from "@/components/agent-activ
 import { Markdown } from "@/components/markdown";
 import { api, idr, me, type Run } from "@/app/lib";
 import { ActionPayload } from "@/components/action-payload";
+import { FindingCharts } from "@/components/finding-chart";
 import { AutonomyNote } from "@/components/autonomy-note";
 import { ComplianceCostNote } from "@/components/compliance-cost";
 import { AutoRefresh } from "@/components/auto-refresh";
@@ -87,8 +88,12 @@ export default async function DisruptionDetail({ params }: { params: Promise<{ i
 
       {run.decision?.recommendation && (
         <Section title="Recommendation">
-          <div className="max-w-3xl rounded-lg border p-5">
+          <div className="max-w-3xl space-y-4 rounded-lg border p-5">
             <Markdown>{run.decision.recommendation}</Markdown>
+            {/* Three charts were drawn during a real handling and every one
+                was dropped, so the feature worked in conversation and nowhere
+                else. They carry the origin of the finding behind them. */}
+            <FindingCharts charts={run.decision.charts} />
             <ComplianceCostNote cost={run.decision.compliance_cost} />
             {Array.isArray(run.decision.untrusted_on_board) &&
               run.decision.untrusted_on_board.length > 0 && (

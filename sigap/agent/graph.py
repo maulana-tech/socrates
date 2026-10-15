@@ -8,6 +8,7 @@ summary along with the origin labels of the data behind it.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -28,7 +29,12 @@ MAX_LEAD_ROUNDS = 14
 #: Rounds and rupiah are not the only ways a handling can run away. One slow
 #: specialist inside the round budget still blocks the queue behind it, so the
 #: whole handling carries a deadline as well.
-MAX_SECONDS_PER_EVENT = 600
+#: How long one handling may take. Measured against SAP AI Core, a seven
+#: specialist handling ran 75 steps and was still working at 600s, so the old
+#: constant turned a working handling into a failed one. Configurable because
+#: the right answer depends on the model endpoint's latency, and a demo wants
+#: a shorter ceiling than an overnight run does.
+MAX_SECONDS_PER_EVENT = int(os.environ.get("SIGAP_EVENT_SECONDS", "1800"))
 
 
 class BudgetExhausted(RuntimeError):
@@ -70,6 +76,21 @@ class Board:
         self.charts.append(spec)
 
     def write(self, key: str, r: Result) -> None:
+        # A second call to the same tool is a second piece of evidence, not a
+        # correction of the first. Overwriting lost it, and a specialist that
+        # read two materials and then drew a chart drew whichever call landed
+        # last: in a real handling it charted the empty one and said so in its
+        # own words, "the chart board was overwritten by the empty M-5512 call
+        # landing last under the same key".
+        #
+        # The first call keeps the plain key, so everything that refers to
+        # `agent.tool` still finds the first read, and later calls are
+        # numbered. The board summary lists them, so the model can name one.
+        if key in self.entries:
+            n = 2
+            while f"{key}#{n}" in self.entries:
+                n += 1
+            key = f"{key}#{n}"
         self.entries[key] = Entry(r.value, r.origin.value, r.source,
                                   r.fetched_at.isoformat(timespec="seconds"))
 
@@ -353,18 +374,36 @@ def _specialist_tools() -> List[dict]:
 
 def run(event: dict, report: Callable[[str, dict], None]) -> dict:
     """Handle one event. `report` is called on every piece of progress."""
-    board = Board()
-    # The board is the evidence in force for this handling. Binding it here
-    # lets a tool ask how trustworthy the ground under it is without having to
-    # be handed the board through every call: tools/execution.py refuses to act
-    # on its own authority when anything under the decision is not trusted.
-    with registry.bind_board(board):
-        return _handle_event(event, report, board)
+    return _handle_event(event, report, Board())
 
 
-def _handle_event(event: dict, report: Callable[[str, dict], None], board: Board) -> dict:
-    cl = client()
+def _handle_event(event: dict, report: Callable[[str, dict], None], board: Board,
+                  cl=None) -> dict:
+    # `cl` is injectable so the cost-on-failure path can be checked without a
+    # model endpoint. A self-check that reaches a paid endpoint is a check
+    # nobody can run on a laptop, and it was briefly one.
+    cl = cl or client()
     cost = Cost()
+    # The board is the evidence in force for this handling, and it is bound
+    # here, where it is actually used, rather than one level up in run(). A
+    # tool asks the board how trustworthy the ground under it is without being
+    # handed it through every call: execution refuses to act on its own
+    # authority when anything under the decision is untrusted, and the chart
+    # tool refuses to draw a finding nobody read. Bound in run() alone, any
+    # other entry into a handling got neither.
+    try:
+        with registry.bind_board(board):
+            return _handle(event, report, board, cl, cost)
+    except Exception as e:
+        # Tokens were spent whether or not the handling finished. Closing a
+        # failed run without the cost recorded Rp 0 against a handling that
+        # had made dozens of model calls, which also hid it from the cap.
+        e.cost_idr = cost.idr                                    # type: ignore[attr-defined]
+        raise
+
+
+def _handle(event: dict, report: Callable[[str, dict], None], board: Board,
+            cl, cost: "Cost") -> dict:
     called: List[str] = []
     deadline = time.monotonic() + MAX_SECONDS_PER_EVENT
 
@@ -411,6 +450,10 @@ def _handle_event(event: dict, report: Callable[[str, dict], None], board: Board
                 # travels with the decision rather than staying in a tool result
                 # nobody reads.
                 "compliance_cost": board.compliance_cost(),
+                # Anything the specialists drew. A real handling called
+                # chart_finding three times and every chart was dropped here,
+                # so the feature worked in conversation and nowhere else.
+                "charts": board.charts,
             }
 
         results: List[dict] = []
@@ -671,6 +714,67 @@ def demo() -> None:
     import inspect
     assert '"charts": board.charts' in inspect.getsource(ask_specialist)
     print(f"  charts    {len(drawn.charts)} drawn from the board and carried on the answer")
+
+    # A second call to the same tool must not erase the first. A specialist
+    # that read two materials and then charted "the" key charted whichever
+    # call landed last, and in a real handling that was the empty one.
+    twice = Board()
+    for v, src in ((["M-4471"], "first"), ([], "second")):
+        twice.write("sourcing.find_alternate_sources", Result(v, Origin.CACHED, src))
+    assert list(twice.entries) == ["sourcing.find_alternate_sources",
+                                   "sourcing.find_alternate_sources#2"], list(twice.entries)
+    assert twice.findings["sourcing.find_alternate_sources"] == ["M-4471"]
+    assert "#2" in twice.summary(), twice.summary()
+    print("  board     a second call is kept as #2, the first is still there ✓")
+
+    # And what was spent has to survive a failure, or a handling that burns
+    # tokens and then times out is recorded as having cost nothing.
+    # A chart drawn while handling a disruption has to reach the decision.
+    # In a real run three were drawn and all three were dropped, so the
+    # feature worked in conversation and nowhere else.
+    shown = Board()
+    handled = _handle_event(
+        {"id": "evt_c", "kind": "port_closure", "title": "Typhoon closes Ningbo",
+         "trigger": "advisory"},
+        lambda k, d: None, shown, cl=ScriptedClient([
+            _Reply([_ToolUse("ask_impact", {"task": "what is hit"})], "tool_use"),
+            _Reply([_ToolUse("get_material_stock",
+                             {"material": "M-4471", "plant": "KRW1"})], "tool_use"),
+            _Reply([_ToolUse("chart_finding", {
+                "key": "impact.get_material_stock", "kind": "bar",
+                "x": "Material", "y": "DailyConsumption"})], "tool_use"),
+            _Reply([_Text("KRW1 is thin on M-4471.")], "end_turn"),
+            _Reply([_Text("Recommend acting on M-4471.")], "end_turn"),
+        ]))
+    assert handled["status"] == "done", handled
+    assert "charts" in handled, sorted(handled)
+    assert len(handled["charts"]) == 1, handled["charts"]
+    assert handled["charts"][0]["from_key"] == "impact.get_material_stock"
+    print(f"  decision  carries {len(handled['charts'])} chart drawn during the "
+          f"handling ✓")
+
+    class Dies(ScriptedClient):
+        """Answers once, charging for it, then falls over."""
+
+        def create(self, **kwargs):
+            if self.calls:
+                raise RuntimeError("the endpoint went away")
+            return super().create(**kwargs)
+
+    spent = Board()
+    try:
+        _handle_event({"id": "evt_x", "kind": "port_closure",
+                           "title": "Typhoon closes the Port of Ningbo",
+                      "trigger": "t"}, lambda k, d: None, spent,
+                      cl=Dies([_Reply(
+                          [_ToolUse("detect_disruption", {"event_id": "evt_x"})],
+                          "tool_use")]))
+    except Exception as e:
+        assert hasattr(e, "cost_idr"), f"{type(e).__name__} carries no cost"
+        assert e.cost_idr > 0, "the failure recorded no cost for a call it made"
+        print(f"  failure   carries the Rp {e.cost_idr:,} it had already spent ✓")
+    else:
+        raise AssertionError("the failing client did not fail the handling")
 
 
 def _check_failure_paths() -> None:

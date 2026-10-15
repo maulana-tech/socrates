@@ -31,6 +31,8 @@ export type Run = {
     recommendation?: string; reason?: string; agents_called?: string[];
     untrusted_on_board?: string[];
     compliance_cost?: import("@/components/compliance-cost").ComplianceCost | null;
+    /** Anything the specialists drew while handling this. */
+    charts?: import("@/components/finding-chart").FindingChart[];
   } | null; error: string | null;
   steps?: Step[]; actions?: Action[]; approvals?: Approval[];
 };

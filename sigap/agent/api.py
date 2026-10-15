@@ -78,7 +78,8 @@ def _handle(run_id: str, event: dict) -> None:
             result = graph.run(event, report)
         store.close_run(run_id, "done", result, cost_idr=result.get("cost_idr", 0))
     except Exception as e:                                           # noqa: BLE001
-        store.close_run(run_id, "failed", error=f"{type(e).__name__}: {e}")
+        store.close_run(run_id, "failed", error=f"{type(e).__name__}: {e}",
+                        cost_idr=getattr(e, "cost_idr", 0))
         traceback.print_exc()
 
 
@@ -105,13 +106,33 @@ def route(method: str, pattern: str) -> Callable:
 
 @route("GET", r"/health")
 def health(_m, _b, _h) -> Tuple[int, dict]:
-    return 200, {
+    # `model` used to report CFG.model unconditionally, which on the AI Core
+    # path named a Bedrock model that was not the one answering. A health
+    # endpoint that misreports what is serving is worse than one that omits it.
+    out = {
         "env": CFG.env,
         "sap_ready": CFG.sap_ready,
+        "sap_host": (CFG.sap_base_url or "").replace("https://", "") or None,
+        "sap_is_mock": fetcher.is_mock_sap(),
         "model_ready": CFG.model_ready,
+        "model_path": CFG.model_path,
         "may_use_modelled": CFG.may_use_modelled,
-        "model": CFG.model,
     }
+    if CFG.model_path == "bedrock":
+        out["model"] = CFG.model
+    elif CFG.model_path == "ai-core":
+        # Named from the deployment that will actually answer. Wrapped because
+        # a health check must not fail on a lookup it only reports.
+        try:
+            from clients import ai_core
+            dep = ai_core.deployment_id()
+            match = [d for d in ai_core.deployments() if str(d.get("id")) == dep]
+            out["model"] = (match[0].get("configurationName") if match else None) or dep
+            out["deployment"] = dep
+        except Exception as e:                                   # noqa: BLE001
+            out["model"] = None
+            out["model_note"] = f"{type(e).__name__}: {e}"[:120]
+    return 200, out
 
 
 def raise_event(b: dict) -> Tuple[str, str, str]:
@@ -251,12 +272,31 @@ def upload(_m, b: dict, h) -> Tuple[int, dict]:
     if not rows:
         return 400, {"error": "the CSV has no data rows"}
 
-    # numbers come back as numbers; CSV sends everything as text
+    # CSV sends everything as text, and three kinds of text are not text.
+    #
+    # An empty cell is not the empty string. Left as "", it passes an
+    # `is not None` guard and then meets arithmetic:
+    #   TypeError: '<' not supported between instances of 'str' and 'float'
+    # which is what a real handling hit on an uploaded alternate source whose
+    # TKDN was genuinely unknown.
+    #
+    # And a boolean is worse, because it fails silently. `False` round-trips
+    # as the string "False", which is **truthy**, so every uploaded option
+    # looked like a new origin country and collected ten working days of
+    # import licensing it did not need. Nothing raised; the dates were just
+    # wrong.
     for r in rows:
         for k, v in list(r.items()):
-            if isinstance(v, str) and v.strip():
+            if not isinstance(v, str):
+                continue
+            t = v.strip()
+            if not t:
+                r[k] = None
+            elif t.lower() in ("true", "false"):
+                r[k] = t.lower() == "true"
+            else:
                 try:
-                    r[k] = float(v) if "." in v else int(v)
+                    r[k] = float(t) if "." in t else int(t)
                 except ValueError:
                     pass
     # The uploader says whether this is real master data or a generated sample.
