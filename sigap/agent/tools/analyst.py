@@ -21,7 +21,7 @@ from typing import Optional
 from core import registry
 from core.provenance import Origin, Result
 from core.registry import UNIVERSAL, register
-from engine.charting import DEFAULT_LIMIT, KINDS, Chart, build
+from engine.charting import DEFAULT_LIMIT, KINDS, ORDERS, Chart, build
 
 
 @register(
@@ -48,12 +48,25 @@ from engine.charting import DEFAULT_LIMIT, KINDS, Chart, build
                    "description": "optional column to split the rows into series"},
         "limit": {"type": ["integer", "null"],
                   "description": f"how many rows to draw. Default {DEFAULT_LIMIT}"},
+        "rows": {"type": ["string", "null"],
+                 "description": "only when a finding holds more than one list of "
+                                "rows and the refusal asked which, e.g. "
+                                "'proposed.orders'"},
+        "order": {"type": ["string", "null"], "enum": [*ORDERS, None],
+                  "description": "which end of the data matters, because that end "
+                                 "is what survives the row limit. 'highest' for a "
+                                 "cost, a penalty or a volume. 'lowest' for days of "
+                                 "cover or anything where small is urgent. Getting "
+                                 "this wrong drops exactly the rows you meant to "
+                                 "show. Default highest"},
     },
     ["key", "kind", "x", "y"],
 )
 def chart_finding(key: str, kind: str, x: str, y: str,
                   title: Optional[str] = None, series: Optional[str] = None,
-                  limit: Optional[int] = None) -> Result:
+                  limit: Optional[int] = None,
+                  order: Optional[str] = None,
+                  rows: Optional[str] = None) -> Result:
     board = registry.current_board()
     if board is None:
         return Result(None, Origin.MISSING, "shared board",
@@ -68,9 +81,12 @@ def chart_finding(key: str, kind: str, x: str, y: str,
                            f"What is there: {', '.join(sorted(entries)) or 'nothing yet'}")
 
     entry = entries[key]
-    rows = getattr(entry, "value", None)
-    out = build(rows, kind, x, y, title=title or "", series=series,
-                limit=limit or DEFAULT_LIMIT)
+    # Not `rows`: that is the name of the parameter naming a path INTO this,
+    # and shadowing it made the data arrive where the path belonged.
+    data = getattr(entry, "value", None)
+    out = build(data, kind, x, y, title=title or "", series=series,
+                limit=limit or DEFAULT_LIMIT, order=order or "highest",
+                rows_path=rows)
 
     if not isinstance(out, Chart):
         note = out.reason
@@ -126,7 +142,10 @@ def demo() -> None:
         assert r.origin is O.DERIVED and r.trusted, r.brief()
         spec = r.value
         assert spec["from_key"] == "impact.get_material_stock"
-        assert spec["origin"] == "live" and spec["unit"] == "TON"
+        # days_left names its own unit, so the axis is days rather than the
+        # TON the rows are measured in. That is what lets one chart span
+        # materials that are not measured the same way.
+        assert spec["origin"] == "live" and spec["unit"] == "days", spec["unit"]
         assert [p["x"] for p in spec["points"]] == ["M-4472", "M-4471", "M-4478"]
         assert board.charts and board.charts[-1] is spec, "the chart must reach the turn"
         print(f"  drew {len(spec['points'])} bars from a live finding, "
@@ -162,6 +181,41 @@ def demo() -> None:
         before = len(board.charts)
         chart_finding("impact.get_material_stock", "pie", "material", "days_left")
         assert len(board.charts) == before, "a refused chart must not reach the turn"
+
+    # A finding that keeps its rows inside an object, two levels down, with
+    # two candidates. This is propose_allocation's actual shape, and it is the
+    # most chart-worthy answer in the system.
+    nested = Board()
+    nested.write("impact.propose_allocation", Result({
+        "feasible": False, "saving_idr": 67_000_000,
+        "proposed": {"rule": "penalty first", "orders": [
+            {"sales_order": "SO-1", "customer": "A", "penalty_idr": 98_000_000},
+            {"sales_order": "SO-2", "customer": "B", "penalty_idr": 44_500_000}]},
+        "by_date": {"rule": "due date", "orders": [
+            {"sales_order": "SO-1", "customer": "A", "penalty_idr": 120_000_000}]},
+    }, O.DERIVED, "engine/allocate.py"))
+
+    with registry.bind_board(nested):
+        amb = chart_finding("impact.propose_allocation", "bar", "customer", "penalty_idr")
+        assert amb.origin is O.MISSING, amb.brief()
+        assert "proposed.orders" in amb.note and "by_date.orders" in amb.note, amb.note
+        print("  two nested row lists refused, both paths named ✓")
+
+        drawn = chart_finding("impact.propose_allocation", "bar", "sales_order",
+                              "penalty_idr", order="highest", rows="proposed.orders")
+        assert drawn.origin is O.DERIVED, drawn.brief()
+        # penalty_idr names its own unit, so no row unit is needed at all.
+        assert drawn.value["unit"] == "Rp", drawn.value["unit"]
+        assert [p["y"] for p in drawn.value["points"]] == [98_000_000, 44_500_000]
+        print(f"  charted proposed.orders in {drawn.value['unit']}, "
+              f"largest first ✓")
+
+        # The wrong plan must not be reachable by accident.
+        other = chart_finding("impact.propose_allocation", "bar", "sales_order",
+                              "penalty_idr", rows="by_date.orders")
+        assert other.value["points"][0]["y"] == 120_000_000, other.value
+        assert chart_finding("impact.propose_allocation", "bar", "a", "b",
+                             rows="nope.orders").origin is O.MISSING
 
     print("analyst ok")
 

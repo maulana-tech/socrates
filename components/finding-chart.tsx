@@ -16,6 +16,8 @@ export type FindingChart = {
   y: string;
   series?: string | null;
   unit?: string | null;
+  /** Which end of the data survived the row limit. */
+  order?: "highest" | "lowest";
   points: { x: string; y: number; series?: string }[];
   total_rows: number;
   truncated: number;

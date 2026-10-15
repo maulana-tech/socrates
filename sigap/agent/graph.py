@@ -295,6 +295,11 @@ def _tool_loop(cl, agent: Agent, task: str, board: Board,
                     "result": res.value,
                     "origin": res.origin.value,
                     "source": res.source,
+                    # The model already gets this in the tool_result. Without
+                    # it here the interface shows a tool that did nothing and
+                    # no reason, which is the same unexplained blank the
+                    # provenance labels exist to prevent.
+                    "note": res.note or None,
                     "thinking": thinking_text or note_text,
                 })
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": body})
@@ -447,8 +452,17 @@ def ask_specialist(code: str, question: str,
 
     start_time = time.monotonic()
     cl = client()
-    answer = _tool_loop(cl, agent, question, board, cost, capture,
-                        history=history, attachments=attachments)
+    # The board has to be in force here too, exactly as in run(). It was not,
+    # so every board-reading tool was blind in a direct conversation: a chart
+    # the agent asked for came back refused and the answer arrived as prose
+    # with nothing under it, which is the case this path exists to serve.
+    #
+    # This does not widen what an agent may do. Autonomy is gated on the run,
+    # not the board, and raise_action refuses outright when no run is open, so
+    # a conversation still cannot raise an action whatever is on the board.
+    with registry.bind_board(board):
+        answer = _tool_loop(cl, agent, question, board, cost, capture,
+                            history=history, attachments=attachments)
     duration_s = round(time.monotonic() - start_time, 2)
     return {
         "agent": code,
