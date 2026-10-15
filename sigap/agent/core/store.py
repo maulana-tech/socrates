@@ -164,6 +164,10 @@ ADDED_LATER = [
     ("actions", "outcome", "TEXT"),
     ("actions", "outcome_at", "TEXT"),
     ("actions", "outcome_detail", "TEXT"),
+    # Why the action went alone or waited. It rode on the return value only,
+    # so the model saw it once and the record never did, which left a planner
+    # looking at a pending action with no way to find out what held it.
+    ("actions", "autonomy_reason", "TEXT"),
 ]
 
 
@@ -262,7 +266,8 @@ def save_step(run_id: str, s: dict) -> None:
 
 # -------------------------------------------------------------------- actions
 def record_action(run_id: str, idempotency_key: str, kind: str,
-                  autonomous: bool, payload: dict) -> Dict[str, Any]:
+                  autonomous: bool, payload: dict,
+                  autonomy_reason: Optional[str] = None) -> Dict[str, Any]:
     """Idempotent: the same key never produces a second action."""
     with connect() as c:
         existing = c.execute("SELECT * FROM actions WHERE idempotency_key=?",
@@ -270,12 +275,16 @@ def record_action(run_id: str, idempotency_key: str, kind: str,
         if existing:
             return dict(existing) | {"repeated": True}
         aid = new_id("act")
+        # autonomy_reason is a column and not a payload field on purpose: the
+        # payload is what the idempotency key is computed from, so putting an
+        # explanatory sentence in it would make two identical transfers look
+        # like different actions.
         c.execute(
             "INSERT INTO actions (id, run_id, idempotency_key, kind, autonomous, payload,"
-            " status, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            " status, created_at, autonomy_reason) VALUES (?,?,?,?,?,?,?,?,?)",
             (aid, run_id, idempotency_key, kind, int(autonomous),
              json.dumps(payload, ensure_ascii=False),
-             "sent" if autonomous else "pending", _now()),
+             "sent" if autonomous else "pending", _now(), autonomy_reason),
         )
         row = c.execute("SELECT * FROM actions WHERE id=?", (aid,)).fetchone()
         return dict(row) | {"repeated": False}
@@ -344,7 +353,8 @@ def open_reservations(material: Optional[str] = None) -> List[dict]:
 OUTCOMES = ("delivered", "late", "short", "failed", "cancelled")
 
 
-def record_outcome(action_id: str, outcome: str, detail: Optional[dict] = None) -> Dict[str, Any]:
+def record_outcome(action_id: str, outcome: str,
+                   detail: Optional[Any] = None) -> Dict[str, Any]:
     """What actually happened after the action was sent.
 
     This is the half of the record that was missing. Everything else here says
@@ -357,6 +367,15 @@ def record_outcome(action_id: str, outcome: str, detail: Optional[dict] = None) 
     """
     if outcome not in OUTCOMES:
         raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}, not {outcome!r}")
+
+    # One shape in the column. The HTTP endpoint was handing in the plain
+    # sentence a person typed while the tool handed in {"note": ...}, so a
+    # reader looking for .note found it half the time depending on which door
+    # the outcome came through.
+    if isinstance(detail, str):
+        detail = {"note": detail} if detail.strip() else None
+    elif detail is not None and not isinstance(detail, dict):
+        detail = {"note": str(detail)}
     with connect() as c:
         row = c.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         if not row:
@@ -484,7 +503,12 @@ def get_run(run_id: str) -> Optional[dict]:
         "decision": json.loads(r["decision"]) if r["decision"] else None,
         "steps": [dict(s) | {"tools": json.loads(s["tools"]),
                              "detail": json.loads(s["detail"])} for s in steps],
-        "actions": [dict(a) | {"payload": json.loads(a["payload"])} for a in actions],
+        "actions": [dict(a) | {
+            "payload": json.loads(a["payload"]),
+            # Parsed here rather than in the interface, so every reader gets the
+            # same shape instead of one of them holding a JSON string.
+            "outcome_detail": json.loads(a["outcome_detail"]) if a["outcome_detail"] else None,
+        } for a in actions],
         "approvals": [dict(p) for p in approvals],
     }
 

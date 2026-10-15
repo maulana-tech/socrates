@@ -100,6 +100,17 @@ def demo() -> None:
     print(f"  and what came of it: {acts[0]['kind']} -> {acts[0]['outcome']}, "
           f"{acts[0]['outcome_detail']['note']}")
 
+    # Both doors store the same shape. The HTTP endpoint hands in the sentence
+    # a person typed; the tool hands in a dict. A reader looking for .note must
+    # not have to know which one was used.
+    from tools.execution import record_outcome as tool_record
+    with registry.bind_run(rid):
+        other = raise_action("notify", True, role="buyer", message="check")
+    typed = tool_record(other.value["id"], "delivered", "landed on time")
+    assert typed.value["outcome_detail"] == '{"note": "landed on time"}', \
+        typed.value["outcome_detail"]
+    print("  a typed sentence and a dict land in the same shape")
+
     # Reality is read once. A second reading does not quietly replace the first.
     again = store.record_outcome(act.value["id"], "delivered")
     assert again["repeated"] and again["outcome"] == "late", again

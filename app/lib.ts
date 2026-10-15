@@ -8,6 +8,15 @@ export type Step = {
 export type Action = {
   id: string; kind: string; autonomous: number; status: string;
   payload: Record<string, unknown>; sap_reference: string | null; created_at: string;
+  /** Why this went alone or waited. Value is only half the test: every figure
+   *  under the decision has to be trusted too. */
+  autonomy_reason?: string | null;
+  /** What actually happened after it was sent. Null until somebody records it. */
+  outcome?: string | null;
+  outcome_at?: string | null;
+  /** Normalised to {note} on write. Rows written before that may be a bare
+   *  string, so a reader has to tolerate both. */
+  outcome_detail?: Record<string, unknown> | string | null;
 };
 export type Approval = {
   id: number; action_id: string; decided_by: string; role: string;
@@ -18,7 +27,11 @@ export type Run = {
   signal_source?: string;
   mode: "autonomous" | "guided"; status: string;
   started_at: string; finished_at: string | null;
-  token_cost_idr: number; decision: { recommendation?: string; reason?: string; agents_called?: string[]; untrusted_on_board?: string[] } | null; error: string | null;
+  token_cost_idr: number; decision: {
+    recommendation?: string; reason?: string; agents_called?: string[];
+    untrusted_on_board?: string[];
+    compliance_cost?: import("@/components/compliance-cost").ComplianceCost | null;
+  } | null; error: string | null;
   steps?: Step[]; actions?: Action[]; approvals?: Approval[];
 };
 

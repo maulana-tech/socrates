@@ -71,7 +71,7 @@ def idempotency_key(kind: str, **details) -> str:
     return f"{kind}:{hashlib.sha256(fingerprint.encode()).hexdigest()[:16]}"
 
 
-def raise_action(kind: str, autonomous: bool, **details) -> Result:
+def raise_action(kind: str, autonomous: bool, reason: str = "", **details) -> Result:
     """Key an action, attach it to the run in force, write it down.
 
     Returns a value of None when no run is open. That is a refusal, not a
@@ -91,17 +91,18 @@ def raise_action(kind: str, autonomous: bool, **details) -> Result:
                             "to. Raise it from a signal rather than from a question."))
 
     key = idempotency_key(kind, **details)
-    action = store.record_action(run_id, key, kind, autonomous, details)
+    action = store.record_action(run_id, key, kind, autonomous, details,
+                                 autonomy_reason=reason or None)
     if action.get("repeated"):
         return Result(action, Origin.DERIVED, "action record",
                       note="an identical action was already raised, so it was not sent again")
     return Result(action, Origin.DERIVED, "action record")
 
 
-def _record(kind: str, autonomous: bool, **details) -> Result:
+def _record(kind: str, autonomous: bool, reason: str = "", **details) -> Result:
     from clients import sap_s4
 
-    r = raise_action(kind, autonomous, **details)
+    r = raise_action(kind, autonomous, reason=reason, **details)
     if r.value is None or r.value.get("repeated"):
         return r
     action = r.value
@@ -133,7 +134,7 @@ def _record(kind: str, autonomous: bool, **details) -> Result:
 def create_stock_transfer(material: str, from_plant: str, to_plant: str,
                           qty: float, cost_idr: int) -> Result:
     alone, why = autonomy_check(cost_idr)
-    r = _record("stock_transfer", alone,
+    r = _record("stock_transfer", alone, reason=why,
                 material=material, from_plant=from_plant, to_plant=to_plant,
                 qty=qty, cost_idr=cost_idr)
 
@@ -193,7 +194,7 @@ def record_outcome(action_id: str, outcome: str, detail: str = "") -> Result:
     from core import store
 
     try:
-        row = store.record_outcome(action_id, outcome, {"note": detail} if detail else None)
+        row = store.record_outcome(action_id, outcome, detail)
     except KeyError:
         return Result(None, Origin.MISSING, "actions table",
                       note=f"no action {action_id}")
@@ -309,6 +310,22 @@ def demo() -> None:
     with registry.bind_board(FakeBoard({})):
         alone, why = autonomy_check(cheap)
         assert not alone and "nothing was read" in why, why
+
+    # The reason has to reach the record, not just the return value. A planner
+    # looking at a pending action asks why it is pending, and the answer has to
+    # still be there tomorrow.
+    from core import store as _store
+    eid = _store.record_event("port_closure", "t", "t", {}, "exec-check")
+    rid2 = _store.start_run(eid, "guided")
+    with registry.bind_run(rid2), registry.bind_board(modelled):
+        made = create_stock_transfer("M-4471", "SBY1", "KRW1", 5, 1_000_000)
+    saved = _store.get_action(made.value["id"])
+    assert saved["autonomy_reason"], "the reason never reached the record"
+    assert "impact.get_material_stock" in saved["autonomy_reason"], saved["autonomy_reason"]
+    assert saved["status"] == "pending", saved["status"]
+    assert "autonomy" not in saved["payload"], \
+        "the reason must not sit in the payload: that is what the key is built from"
+    print(f"  and the record keeps why: {saved['autonomy_reason'][:58]}…")
 
     print("  autonomy needs a trusted board, not just a small number")
     print("  a modelled figure anywhere under the decision sends it to a person")

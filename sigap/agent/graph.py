@@ -83,6 +83,18 @@ class Board:
         return [k for k, e in self.entries.items()
                 if e.origin not in ("live", "cached", "derived")]
 
+    def compliance_cost(self) -> Optional[dict]:
+        """What obeying the rules cost, if the calculator worked it out.
+
+        Lifted off the board rather than passed around, because which
+        specialist ran the simulation is the supervisor's choice at the time
+        and not something the caller should have to know.
+        """
+        for e in self.entries.values():
+            if isinstance(e.value, dict) and e.value.get("compliance_cost"):
+                return e.value["compliance_cost"]
+        return None
+
     def summary(self) -> str:
         lines = [f"- {k}: {e.origin} ({e.source})" for k, e in self.entries.items()]
         return "\n".join(lines) or "(the board is still empty)"
@@ -365,6 +377,10 @@ def _handle_event(event: dict, report: Callable[[str, dict], None], board: Board
                 "agents_called": called,
                 "cost_idr": cost.idr,
                 "untrusted_on_board": board.untrusted_keys(),
+                # The veto is the thing this product is for, so what it cost
+                # travels with the decision rather than staying in a tool result
+                # nobody reads.
+                "compliance_cost": board.compliance_cost(),
             }
 
         results: List[dict] = []

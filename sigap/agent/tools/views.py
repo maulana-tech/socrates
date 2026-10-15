@@ -192,9 +192,17 @@ def sourcing() -> dict:
             source_plant = next((p for p in {x["Plant"] for x in stock.value}
                                  if p in o["label"]), None)
             if source_plant:
-                t = assess(stock.value, o["Material"], source_plant, "KRW1",
+                # Through net_of_reservations, or this table would show an
+                # option as available while another handling already holds the
+                # tonnes it depends on.
+                from tools.inventory import net_of_reservations
+
+                netted, held = net_of_reservations(stock.value, o["Material"], source_plant)
+                t = assess(netted, o["Material"], source_plant, "KRW1",
                            float(o["Quantity"]), start)
                 donor = t.verdict if t.verdict != "available" else None
+                if held:
+                    donor = f"{donor or 'available'}, {held:g} held elsewhere"
         rows.append({
             "id": o["id"], "label": o["label"], "supplier": o["Supplier"],
             "qty": o["Quantity"], "arrives": o["ArrivalDate"],

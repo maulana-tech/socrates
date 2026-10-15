@@ -6,14 +6,25 @@ import { StepSummary, stageLabel, stepAgentName } from "@/components/agent-activ
 import { Markdown } from "@/components/markdown";
 import { api, idr, me, type Run } from "@/app/lib";
 import { ActionPayload } from "@/components/action-payload";
+import { AutonomyNote } from "@/components/autonomy-note";
+import { ComplianceCostNote } from "@/components/compliance-cost";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { Empty, Section } from "@/components/shell";
 import { OriginBadge, StatusBadge } from "@/components/status-badge";
 import Decision from "./Decision";
+import Outcome from "./Outcome";
 
 export const dynamic = "force-dynamic";
 
 const when = (t: string) => new Date(t).toLocaleString("en-GB");
+
+/** Outcomes are normalised to {note} on write, but rows written before that
+ *  hold the bare sentence, and a record is not rewritten to suit a reader. */
+function outcomeNote(detail: Record<string, unknown> | string | null | undefined): string {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  return typeof detail.note === "string" ? detail.note : "";
+}
 
 export default async function DisruptionDetail({ params }: { params: Promise<{ id: string }> }) {
   const run = await api<Run>(`runs/${(await params).id}`);
@@ -78,6 +89,7 @@ export default async function DisruptionDetail({ params }: { params: Promise<{ i
         <Section title="Recommendation">
           <div className="max-w-3xl rounded-lg border p-5">
             <Markdown>{run.decision.recommendation}</Markdown>
+            <ComplianceCostNote cost={run.decision.compliance_cost} />
             {Array.isArray(run.decision.untrusted_on_board) &&
               run.decision.untrusted_on_board.length > 0 && (
                 <p className="text-muted-foreground mt-4 border-t pt-3 text-xs leading-relaxed">
@@ -113,9 +125,9 @@ export default async function DisruptionDetail({ params }: { params: Promise<{ i
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                     <span className="font-mono text-sm font-medium">{a.kind}</span>
                     <StatusBadge status={a.status} />
-                    {a.autonomous === 1 && (
-                      <span className="text-muted-foreground text-xs">
-                        ran on its own authority, under the limit
+                    {a.outcome && (
+                      <span className="text-muted-foreground font-mono text-xs uppercase">
+                        {a.outcome}
                       </span>
                     )}
                     {a.sap_reference && (
@@ -127,12 +139,28 @@ export default async function DisruptionDetail({ params }: { params: Promise<{ i
 
                   <ActionPayload payload={a.payload} />
 
+                  <div className="mt-3">
+                    <AutonomyNote autonomous={a.autonomous} reason={a.autonomy_reason} />
+                  </div>
+
                   {history.map((p) => (
                     <p key={p.id} className="text-muted-foreground mt-3 text-xs">
                       {p.decision} by {p.decided_by} ({p.role}) on {when(p.at)}
                       {p.note ? `. ${p.note}` : ""}
                     </p>
                   ))}
+
+                  {a.outcome && (
+                    <p className="text-muted-foreground mt-3 border-t pt-3 text-xs">
+                      Outcome: <span className="font-medium">{a.outcome}</span>
+                      {a.outcome_at ? ` on ${when(a.outcome_at)}` : ""}
+                      {outcomeNote(a.outcome_detail) ? `. ${outcomeNote(a.outcome_detail)}` : ""}
+                    </p>
+                  )}
+
+                  {/* Only something that actually left can have an outcome, and
+                    * reality is read once, so the form goes away after the first. */}
+                  {!a.outcome && a.status === "sent" && user && <Outcome actionId={a.id} />}
 
                   {a.status === "pending" &&
                     (user ? (

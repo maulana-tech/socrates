@@ -39,6 +39,28 @@ def get_safety_stock_policy(material: str, plant: str) -> Result:
            "to_plant": {"type": "string"}, "qty": {"type": "number"},
            "floor_days": {"type": "integer", "description": "safety floor, default 14"}},
           ["material", "from_plant", "to_plant", "qty"])
+def net_of_reservations(rows: list, material: str, plant: str) -> tuple[list, float]:
+    """Stock rows with another handling's promises taken out, and how much.
+
+    Two handlings read the same on-hand figure, so each is right alone and
+    they are wrong together. Anything that judges whether a plant can spare
+    stock has to come through here, or it will read a number that is already
+    spoken for. Returns the adjusted rows and the quantity held elsewhere.
+    """
+    from core import registry, store
+
+    held = store.reserved_qty(material, plant, excluding_run=registry.current_run())
+    if not held:
+        return rows, 0.0
+    out = [dict(r) for r in rows]
+    for r in out:
+        if r.get("Material") == material and r.get("Plant") == plant:
+            on_hand = r.get("MatlWrhsStkQtyInMatlBaseUnit")
+            if on_hand is not None:
+                r["MatlWrhsStkQtyInMatlBaseUnit"] = max(0.0, float(on_hand) - held)
+    return out, held
+
+
 def assess_transfer(material: str, from_plant: str, to_plant: str, qty: float,
                     floor_days: int = 14) -> Result:
     from engine.matching import assess
@@ -49,21 +71,7 @@ def assess_transfer(material: str, from_plant: str, to_plant: str, qty: float,
         return Result(None, Origin.MISSING, stock.source, note="no stock records to judge")
     start = date.fromisoformat(profile()["AsOfDate"])
 
-    # Stock another open handling has already promised is not available to this
-    # one. Both read the same on-hand figure, so without this each is right
-    # alone and they are wrong together.
-    from core import registry, store
-
-    held = store.reserved_qty(material, from_plant, excluding_run=registry.current_run())
-    rows = stock.value
-    if held:
-        rows = [dict(r) for r in rows]
-        for r in rows:
-            if r.get("Material") == material and r.get("Plant") == from_plant:
-                on_hand = r.get("MatlWrhsStkQtyInMatlBaseUnit")
-                if on_hand is not None:
-                    r["MatlWrhsStkQtyInMatlBaseUnit"] = max(0.0, float(on_hand) - held)
-
+    rows, held = net_of_reservations(stock.value, material, from_plant)
     t = assess(rows, material, from_plant, to_plant, qty, start, floor_days)
     out = t.as_dict()
     out["reserved_elsewhere"] = held
