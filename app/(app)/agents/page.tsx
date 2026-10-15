@@ -31,8 +31,10 @@ export default async function AgentTeam() {
   return (
     <main className="w-full px-4 py-4 md:px-6 md:py-8">
       <header className="border-b pb-5">
+        {/* Counted, not typed. The heading read "ten specialists" while there
+            were eleven, which is the kind of thing a reader checks first. */}
         <h1 className="mt-1 text-xl font-semibold tracking-tight md:mt-2 md:text-2xl">
-          One lead, ten specialists
+          One lead, {agents.filter((a) => !a.lead).length} specialists
         </h1>
         <p className="text-muted-foreground mt-1 max-w-3xl text-sm leading-relaxed">
           Arya calls whichever specialist the last finding warrants. The order is decided

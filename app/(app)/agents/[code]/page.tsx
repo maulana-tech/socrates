@@ -24,7 +24,12 @@ const DESK: Record<string, { work: string; note?: string; examples: string[] }> 
   },
   impact: {
     work: "Disruption trace",
-    examples: ["Which orders route through Ningbo?", "When does M-4471 at KRW1 run out?"],
+    examples: [
+      "Which orders route through Ningbo?",
+      "When does M-4471 at KRW1 run out?",
+      "Can we promise 320 of FG-1120 by 30 September?",
+      "If M-4471 stays short, which customer should we protect?",
+    ],
   },
   demand: {
     work: "Planned rate against what actually happened",
@@ -32,7 +37,10 @@ const DESK: Record<string, { work: string; note?: string; examples: string[] }> 
   },
   inventory: {
     work: "Stock, and how much of it is usable",
-    examples: ["Is any M-4471 stock on quality hold?", "What is the safety floor?"],
+    examples: [
+      "Is any M-4471 stock on quality hold?",
+      "What safety stock should M-4471 at KRW1 hold, and why?",
+    ],
   },
   sourcing: {
     work: "Replacement supply options",
@@ -45,6 +53,7 @@ const DESK: Record<string, { work: string; note?: string; examples: string[] }> 
       "Who quotes M-4471 cheapest and who can deliver fastest?",
       "How concentrated is our supply base?",
       "Which suppliers deliver late?",
+      "What needs ordering today?",
       "Which suppliers hold no orders?",
     ],
   },
@@ -62,7 +71,10 @@ const DESK: Record<string, { work: string; note?: string; examples: string[] }> 
   },
   precedent: {
     work: "Comparable past incidents",
-    examples: ["Has Ningbo disrupted us before?", "How was it handled then?"],
+    examples: [
+      "Has Ningbo disrupted us before?",
+      "What has the industry seen when a port closes?",
+    ],
   },
   execution: {
     work: "Actions raised, and what became of them",

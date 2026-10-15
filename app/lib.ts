@@ -188,6 +188,37 @@ export type View = {
   chart?: DomainChart;
   sections?: ViewSection[];
 };
+/** The standing operation, not one incident. `data` is the unusual part: the
+ *  share of the answer that came from a real record rather than a model. */
+export type Scorecard = {
+  domain: string;
+  supply: {
+    positions: number; at_reorder_point: number; at_reorder_point_pct: number | null;
+    units_to_order: number | null; median_cover_days: number | null;
+    thinnest_cover_days: number | null; unplannable: number;
+    origin: string; source: string;
+  };
+  suppliers: {
+    count: number; orders: number; on_time_pct: number | null;
+    over_slip_threshold: number; slip_threshold_days: number;
+    worst: string | null; origin: string;
+  };
+  governance: {
+    actions: number; autonomous: number; autonomous_pct: number | null;
+    awaiting_a_person: number; outcomes_recorded: number;
+    outcomes_feeding_the_planner: number;
+  };
+  risk: {
+    findings: number; single_sourced: number; largest_exposure_idr: number | null;
+  };
+  data: {
+    entities: number; trusted: number; trusted_pct: number | null;
+    by_entity: Record<string, { origin: string; trusted: boolean; source: string }>;
+    fx_rate: number | null; fx_as_of: string | null;
+    rule_documents: number; rule_parameters: number;
+  };
+};
+
 export type Summary = {
   runs: Record<string, number>; actions: Record<string, number>;
   approved_value_idr: number; pending_value_idr: number; model_cost_idr: number;

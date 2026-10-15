@@ -1,8 +1,15 @@
 "use client";
 
 import {
-  ClipboardCheck, FileText, Inbox, LayoutDashboard, MessagesSquare,
-  ScrollText, Settings2, Users,
+  ClipboardCheck,
+  FileText,
+  Gauge,
+  Inbox,
+  LayoutDashboard,
+  MessagesSquare,
+  ScrollText,
+  Settings2,
+  Users,
 } from "lucide-react";
 
 import { NavMain, type NavItem } from "@/components/nav-main";
@@ -36,12 +43,14 @@ const AGENTS: NavItem[] = [
       { title: "Rules", href: "/agents/compliance", owner: "Kira" },
       { title: "Costing", href: "/agents/simulation", owner: "Tara" },
       { title: "Execution", href: "/agents/execution", owner: "Bram" },
+      { title: "Precedent", href: "/agents/precedent", owner: "Otto" },
       { title: "Latent risk", href: "/agents/exposure", owner: "Vega" },
     ],
   },
 ];
 
 const RECORDS: NavItem[] = [
+  { title: "Operations", href: "/operate", icon: Gauge },
   { title: "Data audit", href: "/audit", icon: ClipboardCheck },
   { title: "Log", href: "/log", icon: ScrollText },
   { title: "Reports", href: "/reports", icon: FileText },

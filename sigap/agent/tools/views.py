@@ -13,6 +13,7 @@ import json
 from datetime import date
 from typing import List
 
+from core import registry
 from core.provenance import Origin, Result
 from engine.simulate import project_cover
 from tools.compliance import check_local_constraints
@@ -621,3 +622,151 @@ VIEWS = {
     "compliance": compliance, "simulation": simulation, "execution": execution,
     "exposure": exposure,
 }
+
+
+def scorecard() -> dict:
+    """How the operation is actually doing, in numbers that can be checked.
+
+    Five groups, and the last one is the unusual one. A supply chain system
+    that cannot say how much of its own answer came from a real record is
+    asking to be believed, and this one reports that share next to everything
+    else it claims.
+    """
+    from core import rules, store
+    from tools.fetcher import ENTITIES, pull
+    from tools.procurement import get_supplier_performance, review_replenishment
+
+    out: dict = {}
+
+    # ---- supply health ---------------------------------------------------
+    # "all", so the median below is the median of the book rather than of the
+    # positions that were already flagged as thin.
+    rev = review_replenishment(status="all")
+    rows = (rev.value or {}).get("rows", [])
+    reviewed = (rev.value or {}).get("reviewed", 0)
+    at_point = [r for r in rows if r["status"] == "order_now"]
+    cover = sorted(r["cover_days"] for r in rows if r["cover_days"] is not None)
+    out["supply"] = {
+        "positions": reviewed,
+        "at_reorder_point": len(at_point),
+        "at_reorder_point_pct": round(len(at_point) / reviewed * 100, 1) if reviewed else None,
+        "units_to_order": (rev.value or {}).get("units_to_order"),
+        "median_cover_days": (round(cover[len(cover) // 2], 1) if cover else None),
+        "thinnest_cover_days": round(cover[0], 1) if cover else None,
+        "unplannable": len((rev.value or {}).get("unplannable", [])),
+        "origin": rev.origin.value, "source": rev.source,
+    }
+
+    # ---- supplier reliability -------------------------------------------
+    perf = get_supplier_performance()
+    sup = perf.value or []
+    floor = rules.number("supplier_slip_flag_days", 5.0)
+    orders = sum(int(s.get("orders") or 0) for s in sup)
+    on_time = sum(int(s.get("orders") or 0) * float(s.get("on_time_pct") or 0) / 100
+                  for s in sup)
+    out["suppliers"] = {
+        "count": len(sup),
+        "orders": orders,
+        # Weighted by orders, because an unweighted average lets a supplier
+        # with one lucky delivery outvote one with fifty.
+        "on_time_pct": round(on_time / orders * 100, 1) if orders else None,
+        "over_slip_threshold": len([s for s in sup
+                                    if float(s.get("avg_slip_days") or 0) >= floor]),
+        "slip_threshold_days": floor,
+        "worst": (max(sup, key=lambda s: float(s.get("avg_slip_days") or 0)).get("supplier")
+                  if sup else None),
+        "origin": perf.origin.value,
+    }
+
+    # ---- governance ------------------------------------------------------
+    counts = store.action_counts()
+    out["governance"] = {
+        "actions": counts.get("total", 0),
+        "autonomous": counts.get("autonomous", 0),
+        "autonomous_pct": (round(counts["autonomous"] / counts["total"] * 100, 1)
+                           if counts.get("total") else None),
+        "awaiting_a_person": counts.get("pending", 0),
+        "outcomes_recorded": counts.get("with_outcome", 0),
+        # The loop, counted. An outcome nobody reads back is a diary entry.
+        "outcomes_feeding_the_planner": len(store.delivery_observations()),
+    }
+
+    # ---- risk ------------------------------------------------------------
+    try:
+        scan = registry.run("scan_supply_exposure", {})
+        findings = scan.value or []
+    except Exception:                                            # noqa: BLE001
+        findings = []
+    single = [f for f in findings if "single" in str(f.get("pattern", "")).lower()]
+    out["risk"] = {
+        "findings": len(findings),
+        "single_sourced": len(single),
+        "largest_exposure_idr": (max((f.get("value_idr") or 0) for f in findings)
+                                 if findings else None),
+    }
+
+    # ---- where the answers came from ------------------------------------
+    seen = {}
+    for entity, (service, sap_entity) in ENTITIES.items():
+        r = pull(entity, service, sap_entity, {"$top": "1"})
+        seen[entity] = {"origin": r.origin.value, "trusted": r.trusted,
+                        "source": r.source}
+    trusted = [e for e, v in seen.items() if v["trusted"]]
+    out["data"] = {
+        "entities": len(seen),
+        "trusted": len(trusted),
+        "trusted_pct": round(len(trusted) / len(seen) * 100, 1) if seen else None,
+        "by_entity": seen,
+        "fx_rate": rules.whole("usd_idr", 0) or None,
+        "fx_as_of": rules.text("fx_as_of") or None,
+        "rule_documents": len(rules.pack()),
+        "rule_parameters": len(rules.params()),
+    }
+    return out
+
+
+def replenishment() -> dict:
+    """The daily ordering worklist, in the shape the table component reads."""
+    from tools.procurement import review_replenishment
+
+    r = review_replenishment()
+    rows = []
+    for x in (r.value or {}).get("rows", []):
+        rows.append({
+            "material": x["material"], "description": x.get("description"),
+            "plant": x["plant"], "status": x["status"],
+            "on_hand": x["on_hand"], "on_order": x["on_order"],
+            "reserved": x["reserved"], "position": x["position"],
+            "reorder_point": x["reorder_point"],
+            "safety_days": x["safety_days"],
+            "cover_days": x["cover_days"],
+            "order_qty": x["order_qty"],
+            "runs_out_on": x["runs_out_on"],
+            "lead_time_days": x["lead_time_days"],
+            "demand_variability_pct": x["demand_variability_pct"],
+            "why": x["reason"],
+        })
+    out = _wrap(rows, [
+        {"k": "material", "l": "Material"}, {"k": "description", "l": "Name"},
+        {"k": "plant", "l": "Plant"}, {"k": "status", "l": "Status"},
+        {"k": "position", "l": "Position", "n": True},
+        {"k": "reorder_point", "l": "Reorder at", "n": True},
+        {"k": "cover_days", "l": "Days cover", "n": True},
+        {"k": "order_qty", "l": "Order", "n": True},
+        {"k": "lead_time_days", "l": "Lead days", "n": True},
+        {"k": "demand_variability_pct", "l": "Demand swing %", "n": True},
+        {"k": "runs_out_on", "l": "Runs out"},
+    ], r)
+    v = r.value or {}
+    out["note"] = ("; ".join(filter(None, [
+        f"{v.get('reviewed', 0)} positions reviewed, {v.get('order_now', 0)} at the "
+        f"reorder point, {v.get('units_to_order', 0):,.0f} units to order",
+        r.note,
+    ])))
+    return out
+
+
+# Registered after their definitions rather than in the dict above, which is
+# declared before this file gets to them.
+VIEWS["scorecard"] = scorecard
+VIEWS["replenishment"] = replenishment
