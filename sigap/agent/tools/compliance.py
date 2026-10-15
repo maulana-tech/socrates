@@ -15,7 +15,8 @@ from tools.fetcher import fixture, profile
 
 REFERENCES = pathlib.Path(__file__).resolve().parent.parent.parent / "references"
 
-# Extra working days an import licence takes when the origin country is new to us.
+# Used only when the rule pack does not state it. A fallback that silently
+# differs from the written rule is worse than no fallback, so it is reported.
 LARTAS_WORKING_DAYS_NEW_ORIGIN = 10
 
 
@@ -26,6 +27,30 @@ def _rule_pack() -> Dict[str, str]:
         f = REFERENCES / f"{name}.md"
         if f.exists():
             out[name] = f.read_text()
+    return out
+
+
+def rule_params(pack: Dict[str, str]) -> Dict[str, str]:
+    """`key: value` lines from the Parameters block of each rule document.
+
+    The documents have to be load-bearing, not decorative. If the written floor
+    says 40 and the code says 40 in its own constant, the day somebody edits
+    the document is the day the two quietly disagree, and the rule that gets
+    enforced is the one nobody reviewed.
+    """
+    out: Dict[str, str] = {}
+    for text in pack.values():
+        body = text.split("## Parameters", 1)
+        if len(body) < 2:
+            continue
+        for line in body[1].splitlines():
+            line = line.strip()
+            if line.startswith(("#", "<!--", "`")) or ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            k, v = k.strip(), v.strip()
+            if k and v and " " not in k:
+                out[k] = v
     return out
 
 
@@ -54,9 +79,20 @@ def check_local_constraints(option_id: str) -> Result:
         return Result(None, Origin.MISSING, "references/",
                       note=f"unknown option '{option_id}'")
 
+    params = rule_params(pack)
     reasons: List[str] = []
     allowed = True
+
+    # The written rule outranks the scenario profile. The profile describes
+    # this company's contract; the reference describes the law behind it, and
+    # where they differ the law is the one that gets enforced on us.
     floor = p["TkdnContractFloorPct"]
+    written_floor = params.get("contract_floor_pct")
+    if written_floor:
+        try:
+            floor = float(written_floor)
+        except ValueError:
+            pass
 
     # --- TKDN ---
     # The rule: an option must not WORSEN the local-content position, and must
@@ -82,10 +118,15 @@ def check_local_constraints(option_id: str) -> Result:
     # --- LARTAS ---
     arrives = date.fromisoformat(option["ArrivalDate"])
     if option.get("NewOrigin"):
-        licensed = _add_working_days(arrives, LARTAS_WORKING_DAYS_NEW_ORIGIN)
+        try:
+            days = int(params.get("new_origin_working_days",
+                                  LARTAS_WORKING_DAYS_NEW_ORIGIN))
+        except ValueError:
+            days = LARTAS_WORKING_DAYS_NEW_ORIGIN
+        licensed = _add_working_days(arrives, days)
         reasons.append(
             f"LARTAS: a new origin country ({option['Origin']}) adds "
-            f"{LARTAS_WORKING_DAYS_NEW_ORIGIN} working days, effective arrival {licensed}"
+            f"{days} working days, effective arrival {licensed}"
         )
         arrives = licensed
 
