@@ -219,6 +219,12 @@ export type Scorecard = {
   };
 };
 
+/** A periodic operations report. `markdown` is assembled in Python, so the
+ *  figures in it cannot have come from a model. */
+export type PeriodReport = {
+  days: number; from: string; to: string; quiet: boolean; markdown: string;
+};
+
 export type Summary = {
   runs: Record<string, number>; actions: Record<string, number>;
   approved_value_idr: number; pending_value_idr: number; model_cost_idr: number;

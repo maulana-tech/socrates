@@ -796,6 +796,97 @@ def action_counts() -> dict:
             ("total", "autonomous", "pending", "sent", "with_outcome")}
 
 
+def period_activity(since: str, until: str) -> dict:
+    """What actually happened between two timestamps.
+
+    Every other report in this system is about one handling. This is the one
+    that answers "how did the week go", and it is deliberately only about the
+    period: what the position is *now* is a different question and mixing the
+    two is how a quiet week reads as a healthy one.
+    """
+    out: dict = {"from": since, "to": until}
+
+    with connect() as c:
+        runs = [dict(r) for r in c.execute(
+            "SELECT r.id, r.status, r.mode, r.started_at, r.finished_at,"
+            "       r.token_cost_idr, r.decision, e.title, e.kind"
+            "  FROM runs r JOIN events e ON e.id = r.event_id"
+            " WHERE r.finished_at IS NOT NULL"
+            "   AND r.finished_at >= ? AND r.finished_at < ?"
+            " ORDER BY r.finished_at", (since, until)).fetchall()]
+
+        acts = [dict(r) for r in c.execute(
+            "SELECT a.kind, a.status, a.autonomous, a.payload, a.outcome,"
+            "       a.outcome_at, a.created_at, a.autonomy_reason, e.title"
+            "  FROM actions a"
+            "  JOIN runs r ON r.id = a.run_id"
+            "  JOIN events e ON e.id = r.event_id"
+            " WHERE a.created_at >= ? AND a.created_at < ?"
+            " ORDER BY a.created_at", (since, until)).fetchall()]
+
+        apps = [dict(r) for r in c.execute(
+            "SELECT decided_by, role, decision, at FROM approvals"
+            " WHERE at >= ? AND at < ? ORDER BY at", (since, until)).fetchall()]
+
+        # Outcomes recorded in the window, whatever the action's own age. A
+        # delivery confirmed on Friday is this week's news even when the order
+        # was raised a month ago.
+        closed = [dict(r) for r in c.execute(
+            "SELECT a.kind, a.outcome, a.outcome_at, a.outcome_detail, e.title"
+            "  FROM actions a"
+            "  JOIN runs r ON r.id = a.run_id"
+            "  JOIN events e ON e.id = r.event_id"
+            " WHERE a.outcome_at >= ? AND a.outcome_at < ?"
+            " ORDER BY a.outcome_at", (since, until)).fetchall()]
+
+    def tally(rows, key):
+        t: dict = {}
+        for r in rows:
+            t[str(r[key])] = t.get(str(r[key]), 0) + 1
+        return dict(sorted(t.items(), key=lambda kv: -kv[1]))
+
+    value = 0
+    for a in acts:
+        try:
+            value += int(json.loads(a["payload"]).get("cost_idr") or 0)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+
+    out["handlings"] = {
+        "finished": len(runs),
+        "by_status": tally(runs, "status"),
+        "by_kind": tally(runs, "kind"),
+        "guided": sum(1 for r in runs if r["mode"] == "guided"),
+        "model_cost_idr": sum(int(r["token_cost_idr"] or 0) for r in runs),
+    }
+    out["decisions"] = [{
+        "title": r["title"], "kind": r["kind"], "status": r["status"],
+        "finished_at": r["finished_at"],
+        "chose": (json.loads(r["decision"]).get("chose")
+                  if r["decision"] else None),
+    } for r in runs]
+    out["actions"] = {
+        "raised": len(acts),
+        "autonomous": sum(1 for a in acts if a["autonomous"]),
+        "by_status": tally(acts, "status"),
+        "by_kind": tally(acts, "kind"),
+        "value_idr": value,
+    }
+    out["approvals"] = {
+        "decided": len(apps),
+        "by_decision": tally(apps, "decision"),
+        "by_person": tally(apps, "decided_by"),
+    }
+    out["outcomes"] = {
+        "recorded": len(closed),
+        "by_outcome": tally(closed, "outcome"),
+        "rows": [{"kind": c["kind"], "outcome": c["outcome"],
+                  "at": c["outcome_at"], "title": c["title"],
+                  "detail": c["outcome_detail"]} for c in closed],
+    }
+    return out
+
+
 if __name__ == "__main__":
     # This check writes rows, so it must never meet the real database. CFG is
     # frozen and read at import, so the only honest way to swap it is to start

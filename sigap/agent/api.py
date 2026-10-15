@@ -278,7 +278,122 @@ def remove_upload(m, _b, h) -> Tuple[int, dict]:
         else (404, {"error": "not found"})
 
 
-@route("GET", r"/reports/([A-Za-z0-9_]+)")
+def _num(n) -> str:
+    return f"{int(n):,}" if n else "0"
+
+
+@route("GET", r"/reports/period")
+@route("GET", r"/reports/period/([0-9]{1,3})")
+def period_report(_m, _b, _h) -> Tuple[int, dict]:
+    """A periodic operations report, assembled from the record.
+
+    Every figure here is counted in Python, like the per-handling report. The
+    model's contribution is the paragraph of judgement at the top, written by
+    Arya through summarise_period, and it is not generated here: a report whose
+    numbers came out of a model is a report nobody can recompute.
+    """
+    import tools  # noqa: F401  (registers every tool)
+    from core import registry
+
+    # A path segment rather than a query parameter: the dispatcher matches on
+    # the path with the query already stripped, so ?days=14 never arrives here.
+    days = 7
+    if _m.groups():
+        days = max(1, min(int(_m.group(1)), 365))
+
+    r = registry.run("summarise_period", {"days": days})
+    if not r.value:
+        return 400, {"error": r.note or "the period could not be summarised"}
+
+    d = r.value
+    did, now = d["what_happened"], d["where_we_stand"]
+    lines: List[str] = [
+        f"# Operations report, {days} days",
+        "",
+        f"Period   : {d['from']} to {d['to']}",
+        f"Generated: {store._now()}",
+        "",
+        "## What happened",
+        "",
+    ]
+
+    if d["quiet"]:
+        lines += ["Nothing was handled, raised or confirmed in this period.", "",
+                  "That is a statement about the period and not about the position. "
+                  "The section below is where the position is.", ""]
+    else:
+        h, a, ap, oc = did["handlings"], did["actions"], did["approvals"], did["outcomes"]
+        lines += [
+            f"- **{h['finished']}** handling(s) finished"
+            + (f", by kind: {', '.join(f'{k} {v}' for k, v in h['by_kind'].items())}"
+               if h["by_kind"] else ""),
+            f"- **{a['raised']}** action(s) raised, {a['autonomous']} without a person, "
+            f"Rp {_num(a['value_idr'])} of value"
+            + (f", by status: {', '.join(f'{k} {v}' for k, v in a['by_status'].items())}"
+               if a["by_status"] else ""),
+            f"- **{ap['decided']}** approval decision(s)"
+            + (f": {', '.join(f'{k} {v}' for k, v in ap['by_decision'].items())}"
+               if ap["by_decision"] else ""),
+            f"- **{oc['recorded']}** outcome(s) confirmed"
+            + (f": {', '.join(f'{k} {v}' for k, v in oc['by_outcome'].items())}"
+               if oc["by_outcome"] else ""),
+        ]
+        if h["model_cost_idr"]:
+            lines.append(f"- Rp {_num(h['model_cost_idr'])} of model time")
+        lines.append("")
+
+        if did["decisions"]:
+            lines += ["### Handled", "", "| Finished | Kind | What | Status | Chose |",
+                      "|---|---|---|---|---|"]
+            for x in did["decisions"]:
+                lines.append(f"| {x['finished_at'][:16]} | {x['kind']} | {x['title']} "
+                             f"| {x['status']} | {x['chose'] or '-'} |")
+            lines.append("")
+
+        if oc["rows"]:
+            lines += ["### Confirmed against reality", "",
+                      "| When | Action | Outcome | Handling |", "|---|---|---|---|"]
+            for x in oc["rows"]:
+                lines.append(f"| {x['at'][:16]} | {x['kind']} | {x['outcome']} "
+                             f"| {x['title']} |")
+            lines += ["", "Each of these is also an input: a delivery confirmed late "
+                      "widens the lead time behind that supplier and raises its "
+                      "reorder point by itself.", ""]
+
+    sup, sp, risk, data = now["supply"], now["suppliers"], now["risk"], now["data"]
+    lines += [
+        "## Where we stand now",
+        "",
+        f"- **{sup['at_reorder_point']}** of {sup['positions']} positions at their "
+        f"reorder point. Thinnest cover {sup['thinnest_cover_days']} days, "
+        f"median {sup['median_cover_days']}.",
+        f"- Suppliers on time **{sp['on_time_pct']}%** across {sp['orders']} orders. "
+        f"{sp['over_slip_threshold']} averaging {sp['slip_threshold_days']}+ days late.",
+        f"- **{risk['single_sourced']}** single-sourced material(s) of "
+        f"{risk['findings']} standing finding(s)."
+        + (f" Largest exposure Rp {_num(risk['largest_exposure_idr'])}."
+           if risk["largest_exposure_idr"] else ""),
+        f"- **{data['trusted']} of {data['entities']}** data entities live or uploaded. "
+        f"{data['rule_documents']} rule documents, {data['rule_parameters']} parameters.",
+        "",
+    ]
+    if sup["unplannable"]:
+        lines.append(f"{sup['unplannable']} position(s) could not be planned at all for "
+                     f"want of withdrawal history. They are listed on /operate.")
+        lines.append("")
+
+    lines += ["---",
+              "Figures counted from the record by SIGAP. Nothing here was estimated."]
+
+    return 200, {"days": days, "from": d["from"], "to": d["to"],
+                 "quiet": d["quiet"], "facts": d,
+                 "markdown": "\n".join(lines)}
+
+
+# Tightened to the run id shape so it cannot swallow /reports/period. Matching
+# runs in registration order, so a looser pattern here would have claimed the
+# word "period" before the route above ever saw it.
+@route("GET", r"/reports/(run_[A-Za-z0-9]+)")
 def report_for_run(m, _b, _h) -> Tuple[int, dict]:
     """Assemble one handling into a report, ready to copy or send."""
     d = store.get_run(m.group(1))

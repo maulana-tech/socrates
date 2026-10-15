@@ -44,7 +44,7 @@ SUPERVISOR = Agent(
     "supervisor", "Arya", "Team lead",
     "Pulls specialists onto the team as the findings warrant, judges when the evidence "
     "is enough, and writes the recommendation with its trade-offs and residual risk.",
-    ["detect_disruption"], effort="high",
+    ["detect_disruption", "summarise_period"], effort="high",
 )
 
 SPECIALISTS = [

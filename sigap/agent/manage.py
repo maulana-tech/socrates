@@ -22,7 +22,7 @@ CHECKS = [
     "fixtures/generate.py",
     "tools/fetcher.py", "tools/compliance.py", "tools/execution.py",
     "tools/exposure.py", "tools/precedent.py", "tools/inventory.py",
-    "tools/impact.py",
+    "tools/impact.py", "tools/supervisor.py",
     "agents/definitions.py", "graph.py", "mcp.py",
     "signals/bmkg.py", "signals/watch.py",
 ]
