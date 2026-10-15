@@ -54,11 +54,30 @@ def rule_params(pack: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
-def _add_working_days(start: date, days: int) -> date:
+def holidays(pack: Dict[str, str]) -> set:
+    """National holidays from the calendar document, as ISO date strings.
+
+    A permit that takes ten working days does not take ten working days across
+    Idul Fitri. Without these, every licence estimate in March 2027 is wrong
+    in the one direction that causes a stockout.
+    """
+    text = pack.get("holiday-calendar", "")
+    out = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if len(line) >= 10 and line[4] == "-" and line[7] == "-":
+            try:
+                out.add(date.fromisoformat(line[:10]).isoformat())
+            except ValueError:
+                continue
+    return out
+
+
+def _add_working_days(start: date, days: int, skip: set = frozenset()) -> date:
     d, left = start, days
     while left > 0:
         d += timedelta(days=1)
-        if d.weekday() < 5:
+        if d.weekday() < 5 and d.isoformat() not in skip:
             left -= 1
     return d
 
@@ -123,7 +142,7 @@ def check_local_constraints(option_id: str) -> Result:
                                   LARTAS_WORKING_DAYS_NEW_ORIGIN))
         except ValueError:
             days = LARTAS_WORKING_DAYS_NEW_ORIGIN
-        licensed = _add_working_days(arrives, days)
+        licensed = _add_working_days(arrives, days, holidays(pack))
         reasons.append(
             f"LARTAS: a new origin country ({option['Origin']}) adds "
             f"{days} working days, effective arrival {licensed}"
@@ -149,6 +168,25 @@ def check_local_constraints(option_id: str) -> Result:
 
 
 def demo() -> None:
+    # The rule documents have to drive the ruling, or they are decoration and
+    # the enforced rule is whatever is hardcoded here.
+    pack = _rule_pack()
+    params = rule_params(pack)
+    assert params.get("contract_floor_pct"), "the TKDN floor is not written down"
+    assert params.get("new_origin_working_days"), "the LARTAS lead time is not written down"
+
+    cal = holidays(pack)
+    assert len(cal) > 10, f"the holiday calendar looks empty: {len(cal)}"
+    # March 2027 carries Nyepi and two days of Idul Fitri. A permit counted
+    # without them finishes in the wrong month.
+    naive = _add_working_days(date(2027, 3, 5), 10)
+    real = _add_working_days(date(2027, 3, 5), 10, cal)
+    assert real > naive, (naive, real)
+    print(f"  rule pack drives the ruling: floor {params['contract_floor_pct']}%, "
+          f"LARTAS {params['new_origin_working_days']} working days, "
+          f"{len(cal)} holidays")
+    print(f"  a 10 working day permit from 5 Mar 2027 ends {real}, not {naive}")
+
     p = profile()
     assert p["TkdnCurrentPct"] < p["TkdnContractFloorPct"], \
         "the scenario assumes the company already sits below the floor"
