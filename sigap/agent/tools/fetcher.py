@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Callable, Dict, List, Optional
 
 from clients import sap_s4
@@ -212,11 +212,83 @@ def _joined_sales_orders(top: str = "200") -> List[dict]:
     return out
 
 
+def _derived_alternate_sources(top: str = "200") -> List[dict]:
+    """Who else has supplied this material, priced from what they charged.
+
+    API_PURCHASING_INFO_RECORD_SRV is 403 on the free sandbox, so the list of
+    approved sources cannot be read. It can be earned instead: a supplier who
+    has delivered this material before is an alternate source by evidence
+    rather than by master data, and the purchase order carries what they
+    charged and how long they took.
+
+    What is NOT derivable stays absent. TKDN is an Indonesian regulatory
+    calculation that no SAP field holds, so tkdn_after is None and Kira rules
+    on it knowing that, rather than on a number invented here.
+    """
+    rows = _joined_purchase_orders(top)
+    heads = {h["PurchaseOrder"]: h for h in
+             _sap_rows("API_PURCHASEORDER_PROCESS_SRV", "A_PurchaseOrder", {"$top": top})}
+    items = {(i.get("PurchaseOrder"), i.get("PurchaseOrderItem")): i for i in
+             _sap_rows("API_PURCHASEORDER_PROCESS_SRV", "A_PurchaseOrderItem",
+                       {"$top": str(int(top) * 3)})}
+
+    by_material: Dict[str, List[dict]] = {}
+    for r in rows:
+        head = heads.get(r["PurchaseOrder"], {})
+        ordered = sap_date(head.get("PurchaseOrderDate"))
+        lead = None
+        if ordered and r["RevisedDeliveryDate"]:
+            lead = (date.fromisoformat(r["RevisedDeliveryDate"])
+                    - date.fromisoformat(ordered)).days
+        item = next((v for k, v in items.items() if k[0] == r["PurchaseOrder"]), {})
+        by_material.setdefault(r["Material"], []).append({
+            "Supplier": r["Supplier"],
+            "Quantity": float(r["OrderQuantity"] or 0),
+            "UnitPrice": float(item.get("NetPriceAmount") or 0),
+            "Currency": item.get("DocumentCurrency"),
+            "LeadDays": lead if lead and lead > 0 else None,
+        })
+
+    out: List[dict] = []
+    for material, seen in by_material.items():
+        priced = [s for s in seen if s["UnitPrice"] > 0]
+        if not priced:
+            continue
+        floor = min(s["UnitPrice"] for s in priced)
+        # One row per supplier, cheapest first, so option ids read in the order
+        # a buyer would consider them.
+        best: Dict[str, dict] = {}
+        for s in sorted(priced, key=lambda x: x["UnitPrice"]):
+            if s["Supplier"] and s["Supplier"] not in best:
+                best[s["Supplier"]] = s
+        for n, (supplier, s) in enumerate(best.items()):
+            out.append({
+                "id": f"{material}-{n + 1}",
+                "label": f"Supplier {supplier}",
+                "Material": material,
+                "Supplier": supplier,
+                "Quantity": s["Quantity"],
+                "UnitPrice": s["UnitPrice"],
+                "Currency": s["Currency"],
+                "LeadDays": s["LeadDays"],
+                # What this source costs over the cheapest one on record, in
+                # the document's own currency. Not converted: an exchange rate
+                # nobody stated is the kind of number this system refuses.
+                "ExtraCost": round((s["UnitPrice"] - floor) * s["Quantity"], 2),
+                "ExtraCostIDR": None,
+                "TkdnAfterPct": None,
+                "ArrivalDate": None,
+                "Origin": None,
+            })
+    return out
+
+
 #: Reads that need more than one SAP entity to make one row.
 JOINS = {
     "PurchaseOrder": _joined_purchase_orders,
     "BillOfMaterial": _joined_bom,
     "SalesOrder": _joined_sales_orders,
+    "AlternateSource": _derived_alternate_sources,
 }
 
 
