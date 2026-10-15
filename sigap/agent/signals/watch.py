@@ -22,6 +22,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+from datetime import date
 from typing import Callable, List
 
 from core import store
@@ -43,6 +44,15 @@ EXPOSURE_TOP_N = 3
 # A standing exposure is not news every week. It is news again if it is still
 # there a month later and nobody has acted on it.
 EXPOSURE_QUIET_DAYS = 30
+
+# Ordering is a daily rhythm, not a reaction. This is the cadence that makes
+# the system operate the supply chain rather than only respond to it: nothing
+# has to break for the review to happen, the clock is enough.
+REPLENISH_INTERVAL_SECONDS = 24 * 3600
+
+# Supplier reliability moves over months, so judging it weekly is already
+# generous. It raises a report, never an action.
+SUPPLIER_REVIEW_INTERVAL_SECONDS = 7 * 24 * 3600
 
 
 def sweep(raise_event: Callable[[dict], str]) -> List[str]:
@@ -97,6 +107,81 @@ def sweep_exposure(raise_event: Callable[[dict], str]) -> List[str]:
     return raised
 
 
+def sweep_replenishment(raise_event: Callable[[dict], str]) -> List[str]:
+    """The daily ordering review, raised as one worklist rather than many.
+
+    One event per position would bury the queue, and a buyer does not work
+    position by position anyway: they work a list. So the whole review becomes
+    one event per day, carrying the positions that need an order.
+    """
+    from core import registry, rules, store
+    import tools  # noqa: F401  (registers every tool)
+
+    r = registry.run("review_replenishment", {})
+    if not r.value or not r.value.get("rows"):
+        return []
+
+    rows = [x for x in r.value["rows"] if x["status"] == "order_now"]
+    if not rows:
+        return []
+
+    top = rows[:rules.whole("replenishment_top_n", 12)]
+    today = date.today().isoformat()
+    body = {
+        "kind": "replenishment",
+        "title": f"Replenishment review: {len(rows)} position(s) at the reorder point"[:120],
+        # The day is the identity, so one review a day gets through and a
+        # restart in the afternoon does not raise a second one.
+        "trigger": f"Daily replenishment review {today}"[:200],
+        "payload": {"positions": top, "order_now": len(rows),
+                    "reviewed": r.value.get("reviewed"),
+                    "units_to_order": r.value.get("units_to_order"),
+                    "not_shown": max(0, len(rows) - len(top)),
+                    "origin": r.origin.value, "source": r.source},
+        "source": "tools/procurement.py",
+    }
+    if store.event_exists(body["title"], body["trigger"]):
+        return []
+    return [raise_event(body)]
+
+
+def sweep_supplier_review(raise_event: Callable[[dict], str],
+                          floor: float = None) -> List[str]:
+    """Weekly: suppliers whose own dates have stopped meaning anything.
+
+    `floor` exists so the self-check can exercise the flagging path on a quiet
+    book. Tuning the written threshold until a test passes would be the wrong
+    way round.
+    """
+    from core import registry, rules, store
+    import tools  # noqa: F401
+
+    r = registry.run("get_supplier_performance", {})
+    if not r.value:
+        return []
+
+    floor = rules.number("supplier_slip_flag_days", 5.0) if floor is None else floor
+    bad = [s for s in r.value
+           if float(s.get("avg_slip_days") or 0) >= floor]
+    if not bad:
+        return []
+
+    bad.sort(key=lambda s: -float(s.get("avg_slip_days") or 0))
+    week = date.today().isocalendar()
+    body = {
+        "kind": "supplier_review",
+        "title": f"{len(bad)} supplier(s) averaging {floor:g}+ days late"[:120],
+        "trigger": f"Weekly supplier review {week[0]}-W{week[1]:02d}"[:200],
+        "payload": {"suppliers": bad[:EXPOSURE_TOP_N * 2], "flagged": len(bad),
+                    "threshold_days": floor,
+                    "origin": r.origin.value, "source": r.source},
+        "source": "tools/procurement.py",
+    }
+    if store.event_exists(body["title"], body["trigger"]):
+        return []
+    return [raise_event(body)]
+
+
 def _loop(name: str, one_pass: Callable[[], List[str]], interval: int) -> None:
     while True:
         try:
@@ -110,19 +195,39 @@ def _loop(name: str, one_pass: Callable[[], List[str]], interval: int) -> None:
         time.sleep(interval)
 
 
+#: Every cadence the system runs on its own: a name, the pass, and how often.
+#: Reacting to what happened is one of four, not the whole job.
+def cadences(raise_event: Callable[[dict], str], interval: int,
+             exposure_interval: int, replenish_interval: int,
+             supplier_interval: int):
+    return [
+        ("BMKG", lambda: sweep(raise_event), interval),
+        ("Vega", lambda: sweep_exposure(raise_event), exposure_interval),
+        ("Prita", lambda: sweep_replenishment(raise_event), replenish_interval),
+        ("Prita weekly", lambda: sweep_supplier_review(raise_event), supplier_interval),
+    ]
+
+
 def start(raise_event: Callable[[dict], str],
           interval: int = INTERVAL_SECONDS,
-          exposure_interval: int = EXPOSURE_INTERVAL_SECONDS) -> List[threading.Thread]:
-    """Both watches: react to what happened, and look for what has not yet."""
-    threads = [
-        threading.Thread(target=_loop, daemon=True,
-                         args=("BMKG", lambda: sweep(raise_event), interval)),
-        threading.Thread(target=_loop, daemon=True,
-                         args=("Vega", lambda: sweep_exposure(raise_event), exposure_interval)),
-    ]
+          exposure_interval: int = EXPOSURE_INTERVAL_SECONDS,
+          replenish_interval: int = REPLENISH_INTERVAL_SECONDS,
+          supplier_interval: int = SUPPLIER_REVIEW_INTERVAL_SECONDS,
+          ) -> List[threading.Thread]:
+    """The clocks the system runs on.
+
+    Two of these react to something: a quake, a standing exposure. The other
+    two happen because it is a new day or a new week, which is what operating
+    a supply chain actually consists of.
+    """
+    threads = [threading.Thread(target=_loop, daemon=True, args=c)
+               for c in cadences(raise_event, interval, exposure_interval,
+                                 replenish_interval, supplier_interval)]
     for t in threads:
         t.start()
-    print(f"  watch: BMKG every {interval}s · Vega every {exposure_interval}s", flush=True)
+    print(f"  watch: BMKG every {interval}s · Vega every {exposure_interval}s"
+          f" · replenishment every {replenish_interval}s"
+          f" · supplier review every {supplier_interval}s", flush=True)
     return threads
 
 
@@ -167,6 +272,58 @@ def demo() -> None:
               f"Rp {ranked[0]:,} at the head")
     assert sweep_exposure(fake_raise) == [], "a standing exposure was raised twice"
     print("  the same standing risk does not come back next pass ✓")
+
+    # The two cadences that run because it is a new day, not because anything
+    # broke. This is the difference between responding and operating.
+    before = len(seen)
+    daily = sweep_replenishment(fake_raise)
+    if daily:
+        body = seen[-1]
+        assert body["kind"] == "replenishment", body
+        pos = body["payload"]["positions"]
+        assert pos and all(p["status"] == "order_now" for p in pos), pos
+        assert len(pos) <= 12, f"the worklist must stay readable: {len(pos)}"
+        # Most urgent first, or the cap throws away the wrong ones.
+        cover = [p["cover_days"] for p in pos]
+        assert cover == sorted(cover), cover
+        print(f"  daily review raised {body['payload']['order_now']} position(s) "
+              f"needing {body['payload']['units_to_order']:,.0f} units, "
+              f"{len(pos)} on the worklist")
+    else:
+        print("  daily review found nothing at the reorder point today")
+    assert sweep_replenishment(fake_raise) == [], \
+        "the same day's review was raised twice"
+
+    # Exercise the flagging path explicitly: the real threshold may well find
+    # nothing on a healthy book, and a check that proves nothing is worse than
+    # no check.
+    forced = sweep_supplier_review(fake_raise, floor=0.1)
+    assert forced, "no supplier slipped at all, which the fixture should not allow"
+    fbody = seen[-1]
+    fslips = [float(x["avg_slip_days"]) for x in fbody["payload"]["suppliers"]]
+    assert fslips == sorted(fslips, reverse=True) and min(fslips) >= 0.1, fslips
+    print(f"  weekly review, forced threshold → {fbody['payload']['flagged']} "
+          f"supplier(s), worst averaging {fslips[0]:.1f} days late ✓")
+
+    weekly = sweep_supplier_review(fake_raise)
+    if weekly:
+        body = seen[-1]
+        assert body["kind"] == "supplier_review", body
+        slips = [float(x["avg_slip_days"]) for x in body["payload"]["suppliers"]]
+        assert slips == sorted(slips, reverse=True), slips
+        assert min(slips) >= body["payload"]["threshold_days"], slips
+        print(f"  weekly review flagged {body['payload']['flagged']} supplier(s), "
+              f"worst averaging {slips[0]:.1f} days late")
+    else:
+        print("  weekly review flagged no supplier over the threshold")
+    assert sweep_supplier_review(fake_raise) == [], \
+        "the same week's supplier review was raised twice"
+
+    # All four clocks, and nothing is wired to a clock it does not have.
+    names = [c[0] for c in cadences(fake_raise, 1, 2, 3, 4)]
+    assert names == ["BMKG", "Vega", "Prita", "Prita weekly"], names
+    assert [c[2] for c in cadences(fake_raise, 1, 2, 3, 4)] == [1, 2, 3, 4]
+    print(f"  four cadences: {', '.join(names)} ✓")
     print("watch ok")
 
 

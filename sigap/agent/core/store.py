@@ -753,3 +753,62 @@ if __name__ == "__main__":
             env={**os.environ, "SIGAP_DB": str(db), "SIGAP_STORE_CHECK": "1",
                  "PYTHONPATH": os.environ.get("PYTHONPATH", ".")}))
     demo()
+
+
+def delivery_observations() -> List[dict]:
+    """Deliveries this system proposed and then watched land.
+
+    The closing half of the loop. Every other lead time in the system is read
+    out of a purchase order, which is what somebody promised. These are what
+    actually happened, recorded by whoever confirmed receipt, and they are the
+    only observations in the system that were not copied from a document.
+
+    `days` is from the action being raised to the outcome being recorded, so a
+    delivery that took three weeks longer than its paperwork said shows up as
+    a longer observation rather than as a note nobody reads.
+    """
+    with connect() as c:
+        rows = c.execute(
+            "SELECT kind, payload, created_at, outcome, outcome_at, outcome_detail"
+            "  FROM actions"
+            " WHERE outcome IS NOT NULL AND outcome_at IS NOT NULL"
+            " ORDER BY outcome_at DESC").fetchall()
+
+    out: List[dict] = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"])
+            raised = datetime.fromisoformat(r["created_at"])
+            landed = datetime.fromisoformat(r["outcome_at"])
+        except (ValueError, TypeError, json.JSONDecodeError):
+            continue
+        days = (landed - raised).days
+        if days < 0:
+            continue
+        out.append({
+            "kind": r["kind"],
+            "supplier": payload.get("supplier") or payload.get("Supplier"),
+            "material": payload.get("material") or payload.get("Material"),
+            "days": days,
+            "outcome": r["outcome"],
+        })
+    return out
+
+
+def action_counts() -> dict:
+    """How many actions, how many without a person, how many closed out.
+
+    The ratio is the governance claim this system makes, so it is counted
+    rather than asserted: an autonomy limit nobody can measure the effect of
+    is a paragraph in a README.
+    """
+    with connect() as c:
+        r = c.execute(
+            "SELECT COUNT(*) total,"
+            "       COALESCE(SUM(autonomous), 0) autonomous,"
+            "       COALESCE(SUM(status = 'pending'), 0) pending,"
+            "       COALESCE(SUM(status = 'sent'), 0) sent,"
+            "       COALESCE(SUM(outcome IS NOT NULL), 0) with_outcome"
+            "  FROM actions").fetchone()
+    return {k: int(r[k] or 0) for k in
+            ("total", "autonomous", "pending", "sent", "with_outcome")}
