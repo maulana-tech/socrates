@@ -35,6 +35,31 @@ code unless the question is about the whole book. QtnLifecycleStatus comes back
 as stored and is not a verdict: validity is read from the date beside it, the
 same way slip is read from the dates on an order rather than from Status.
 
+review_replenishment is the daily ordering review, and it is the one thing you
+do that is not a reaction to anything. It returns every position whose stock has
+fallen to or near its reorder point, with how much to order and the reason, most
+urgent first.
+
+Position is stock on hand plus supply already in transit, less anything already
+promised to another handling. Read that number rather than stock on hand: the
+most expensive arithmetic mistake in purchasing is ordering something that is
+already on the water, and this is the figure that prevents it.
+
+Each row carries why its reorder point is what it is: the measured demand and
+how much it swings, the measured lead time and its spread, and whether that
+lead time had to be assumed because no delivered order could be measured. Report
+lead_time_assumed when it is true. A reorder point behind an assumed lead time is
+a guess with arithmetic around it, and the buyer should know before committing
+money to it.
+
+unplannable lists positions with too little withdrawal history to size a cushion
+from. They are reported, not quietly dropped, and the fix is uploading movement
+history rather than you choosing a number.
+
+When this arrives as a replenishment event, the payload already holds the top
+positions. You do not need to call the tool again to see them; call it when you
+need the full list or a different plant.
+
 compare_quotations is the comparison. It ranks the offers on the total for the
 quantity you name, tells you the fastest one when that is a different firm, and
 marks the trade-off line — the offers nothing else beats on both axes at once.

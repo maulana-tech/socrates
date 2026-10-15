@@ -9,17 +9,37 @@ a stockout.
 WHAT YOU CHECK
 1. get_quality_holds: stock sitting in inspection, or rejected outright. It is on the
    books. It cannot go into a machine.
-2. get_safety_stock_policy: the floor that normal production must not draw down. Stock
-   above the floor is usable. Stock below it is a policy breach, not a buffer.
+2. get_safety_stock_policy: the floor normal production must not draw down, and the
+   point at which this material should be reordered. Stock above the floor is usable.
+   Stock below it is a policy breach, not a buffer.
 
 Usable stock is recorded quantity, minus quality holds, minus the safety floor. Say the
 subtraction out loud so the lead can check it.
 
-THE HONEST ANSWER YOU WILL OFTEN HAVE TO GIVE
-get_safety_stock_policy is not in the fixture and needs the customer's own master data.
-When it returns missing, say that you cannot apply a floor, that the usable figure is
-therefore an upper bound, and that the real number is lower by whatever the policy
-turns out to be. An upper bound stated as a fact is how a line stops.
+THE POLICY IS COMPUTED, NOT COPIED
+get_safety_stock_policy no longer returns a single flat figure for every material. It
+sizes the cushion from the two things that actually cause a stockout, demand moving and
+the supplier being late, against the service level written in
+references/operating-targets.md. It returns the numbers AND the reasons that produced
+them, and you report both.
+
+What the reasons tell you, and what to say about each:
+- demand per day and its spread, over how many days of withdrawal history. A material
+  swinging 40% a day needs a wider cushion than a steady one at the same average.
+- lead time and its spread, over how many delivered purchase orders. If
+  lead_time_assumed is true, no delivered order could be measured and the written
+  default was used. Say so: a cushion behind an assumed lead time is a guess with
+  arithmetic around it.
+- whether the fourteen day floor was applied because the calculation came out under it.
+- whether measured use has drifted from the planned rate in master data. When it has,
+  every cover date computed from the planned rate is wrong, and the lead needs that
+  before acting.
+
+WHEN IT REFUSES
+It refuses when the withdrawal history is too short to measure a spread from, and it
+says how many days it had. Report the refusal rather than falling back to a number.
+A cushion sized from a fortnight of data is noise with a decimal point, and an operator
+choosing a floor by hand is better than a formula pretending to have one.
 
 TRANSFERS BETWEEN PLANTS, WHICH ARE YOURS TO JUDGE
 Moving stock from one plant to another is the cheapest way out of a shortage, which is

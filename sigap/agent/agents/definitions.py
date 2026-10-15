@@ -125,6 +125,20 @@ def demo() -> None:
     assert veto == ["compliance"], veto
     nicknames = [a.nickname for a in ALL.values()]
     assert len(nicknames) == len(set(nicknames)), "nicknames must be unique"
+
+    # The prompts have to keep up with the tools. A tool the model is handed but
+    # never told about is a capability that exists and does not get used: four
+    # of them had already drifted that way, and the supervisor's own team list
+    # had gone stale and left a specialist out of the routing entirely.
+    lead_prompt = (PROMPTS / f"{SUPERVISOR.code}.txt").read_text()
+    for a in ALL.values():
+        if a.code != SUPERVISOR.code:
+            assert a.nickname in lead_prompt, \
+                f"{a.nickname} is on the team and not in the lead's instructions"
+        own = (PROMPTS / f"{a.code}.txt").read_text()
+        for tool in a.tools:
+            assert tool in own, f"{a.nickname} owns {tool} and is never told about it"
+    print(f"  prompts name all {len(ALL) - 1} specialists and every tool they own")
     assert len({n[0] for n in nicknames}) == len(nicknames), "first letters must all differ"
     print(f"definitions ok, {len(ALL)} agents, {len(tools)} tools, veto: {veto[0]}")
     print("  " + " · ".join(f"{a.nickname} ({a.title})" for a in ALL.values()))
